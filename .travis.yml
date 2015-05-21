@@ -1,0 +1,42 @@
+#
+# Copyright (c) 2008-2015 the Urho3D project.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+#
+
+language: cpp
+compiler: gcc
+cache: ccache
+sudo: false
+addons: {apt: {sources: [kubuntu-backports, ubuntu-toolchain-r-test], packages: [cmake, g++-4.9]}}
+env:
+  global:
+  - secure: PggEpj+5NxKsXx8ZFstYLr/58mYQkRn5R2Sed+u3JAYTXTLjFotLMx2iI6g2CvSVmb5RVvT2ypqAZhoKRVCC4pN6vuS+O7YyiG7+9PdeufdgLyTvqs64KPUumPMymGG7UIAIOpR2SKyLLyZh/Yye0wzI7Jr98IoMdyq/7MBXwOeXnZu8sV+FwtqziUWIy++QuyEW2KtarBa5wcA6kb3L/H1wwCA2w2eqxz1oHV+qbCiJU63fvdgtJRFuEq3VUJUib7tY5b90dL5tvbVckKDq20aFApFOb1NuvpADKWCiZpj056FRmNBhnru93SsKVFj9wx4GTOCx2w4rqby1p6t2XZdfpDqdFx+Tqlf3fTov9lKSonavcGsOvNNR0vWneGnkKrtBlovy8jKcK/PHj+6cN3U+0foolRPG8GDJZ41cxxEsfkENX0MgUpJ/ZpGxeXgIrzBVIvh3fs/7cTIzZg03Rar7mdv08iN6phftaw/gDhA6ue4zu48z1n27hQPEIZ4ZjWLOeX6kXkUgJAB/TqlMviR8sFIxt9gMU2UBBxv5YJrZbD0SyQiZL6CG6kKdr0ia+D/l4XdRO26LEDz67LtzoWHKRiB/fzMlGQg7hAzCwG8KU9rEPo7TFi7Onh2j4bx4khvSkMmcdN5mIuepiFJ8A3B8lJZSDqwIL0BsYuJUKYs=
+  - NUMJOBS=4
+  - CCACHE_SLOPPINESS=pch_defines,time_macros
+  - CCACHE_COMPRESS=1
+before_script:
+  - export CXX=g++-4.9 CC=gcc-4.9
+  - for compiler in gcc g++; do ln -s $(which ccache) $HOME/$compiler-4.9; done && export PATH=$HOME:$PATH
+  - ccache -z -M 100M
+script: rake
+after_script: ccache -s
+notifications: {email: {on_success: never, on_failure: change}}
+
+# vi: set ts=2 sw=2 expandtab:
