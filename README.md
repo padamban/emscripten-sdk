@@ -9,12 +9,12 @@ You can also set up Emscripten from source, without the pre-built SDK, see "Inst
 To get started with Emscripten development, grab one of the packages below:
 
 Windows:
-* Emscripten SDK Web Installer is a NSIS installer that always gets you the latest Emscripten SDK from the web:
-  * [emsdk-1.34.1-web-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.34.1-web-64bit.exe)
-* Emscripten SDK Offline Installer is a NSIS installer that bundles together the Emscripten toolchain as an offline-installable package:
-  * [emsdk-1.34.1-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.34.1-full-64bit.exe)
-* Portable Emscripten SDK is a zipped package of the Emscripten SDK that does not require system installation privileges. Just unzip and go:
-  * [emsdk-1.34.1-portable-64bit.zip](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.34.1-portable-64bit.zip)
+* Emscripten SDK Web Installer (64-bit) is a NSIS installer that always gets you the latest Emscripten SDK from the web:
+  * [emsdk-1.35.0-web-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-web-64bit.exe)
+* Emscripten SDK Offline Installer (64-bit) is a NSIS installer that bundles together the Emscripten toolchain as an offline-installable package:
+  * [emsdk-1.35.0-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-full-64bit.exe)
+* Portable Emscripten SDK (64-bit) is a zipped package of the Emscripten SDK that does not require system installation privileges. Just unzip and go:
+  * [emsdk-1.35.0-portable-64bit.zip](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-portable-64bit.zip)
 
 Linux and Mac OS X:
 * [emsdk-portable.tar.gz](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-portable.tar.gz): Emscripten SDK is available as a portable web-installer for Linux and OS X.
@@ -63,6 +63,18 @@ Additional Notes:
 
  * Python is probably already installed if you are on Linux or OS X.
  * Node.js and LLVM should have convenient binaries for your OS, but installing them from source is easy, just compile them in their directories, you don't need to bother with installing them systemwide.
+
+### Installing emsdk directly from GitHub
+
+If you want to bootstrap to emsdk development version instead of the stable releases, you can do so by installing emsdk directly from github. Functionally this behaves identical to the Portable SDK. As a prerequisite, you must first manually download and install [Python](https://www.python.org) to bootstrap, and after that, run:
+
+    git clone https://github.com/juj/emsdk.git
+    cd emsdk
+    ./emsdk install <sdk-of-your-choice>
+    ./emsdk activate <sdk-of-your-choice>
+    source ./emsdk_env.sh (Windows: emsdk_env.bat)
+
+The only difference in this setup is that you will then use `git pull` instead of `./emsdk update` to update to a newer version of Emscripten SDK.
 
 ## Getting Started with Emscripten
 
@@ -188,6 +200,14 @@ If you want to remove a Portable SDK, just delete the directory where you put th
 
 * Emsdk does not provide `python`, `node` or `java` on Linux. The user is expected to install these beforehand with the system package manager.
 
+##### Windows
+
+* On Windows, if you want to build any of the packages from source (instead of using the precompiled ones), you will need git, CMake and Visual Studio 2013. Git can be installed via emsdk by typing "emsdk install git-1.9.4", CMake can be found from http://www.cmake.org/, and Visual Studio can be installed from https://www.visualstudio.com.
+
+###### How do I run Emscripten on a 32-bit Windows?
+
+Emscripten SDK releases are no longer packaged or maintained for 32-bit Windows. If you want to run Emscripten on a 32-bit system, you can try manually building the compiler for 32-bit mode. Follow the steps in the above section "Installing emsdk directly from GitHub" to get started.
+
 ### Archived Releases
 
 You can always install old SDK and compiler toolchains via the latest emsdk. If you need to fall back to an old version, download the Portable SDK version and use that to install a previous version of a tool. All old tool versions are available by typing `emsdk list --old`.
@@ -211,4 +231,5 @@ On Windows, you can install one of the **old versions** via an offline NSIS inst
  - [emsdk-1.27.0-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.27.0-full-64bit.exe) (last release based on Clang 3.3)
  - [emsdk-1.29.0-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.29.0-full-64bit.exe) (the only release based on Clang 3.4)
  - [emsdk-1.30.0-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.30.0-full-64bit.exe) (the only release based on Clang 3.5)
- - [emsdk-1.34.1-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.30.0-full-64bit.exe) (first release based on Clang 3.7)
+ - [emsdk-1.34.1-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.34.1-full-64bit.exe) (first release based on Clang 3.7)
+ - [emsdk-1.35.0-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-full-64bit.exe)

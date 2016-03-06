@@ -80,7 +80,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'Emscripten'
-copyright = u'2014, ' 
+copyright = u'2015, '
   # Note, theme was modified to allow this to display (fix breaks the translation code, which was breaking the above link and rendering it as text).
   # Also so I could link to specific copyright page.
 
@@ -90,7 +90,7 @@ copyright = u'2014, '
 # built documents.
 #
 
-emscripten_version = open(os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'emscripten-version.txt'))).read().strip()
+emscripten_version = open(os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'emscripten-version.txt'))).read().strip().replace('"', '')
 
 # The short X.Y version.
 version = emscripten_version[:emscripten_version.rindex('.')]

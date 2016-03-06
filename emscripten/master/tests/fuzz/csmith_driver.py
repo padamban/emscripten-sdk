@@ -80,10 +80,10 @@ while 1:
     notes['invalid'] += 1
     continue
 
-  shared.check_execute([COMP, '-m32', opts, '-emit-llvm', '-c', fullname, '-o', filename + '.bc'] + CSMITH_CFLAGS + shared.EMSDK_OPTS)
-  shared.check_execute([shared.path_from_root('tools', 'nativize_llvm.py'), filename + '.bc'])
+  shared.check_execute([COMP, '-m32', opts, '-emit-llvm', '-c', fullname, '-o', filename + '.bc'] + CSMITH_CFLAGS + shared.EMSDK_OPTS + ['-w'])
+  shared.check_execute([shared.path_from_root('tools', 'nativize_llvm.py'), filename + '.bc'], stderr=PIPE)
   shutil.move(filename + '.bc.run', filename + '2')
-  shared.check_execute([COMP, fullname, '-o', filename + '3'] + CSMITH_CFLAGS)
+  shared.check_execute([COMP, fullname, '-o', filename + '3'] + CSMITH_CFLAGS + ['-w'])
   print '3) Run natively'
   try:
     correct1 = shared.jsrun.timeout_run(Popen([filename + '1'], stdout=PIPE, stderr=PIPE), 3)
@@ -102,10 +102,10 @@ while 1:
 
   def try_js(args=[]):
     shared.try_delete(filename + '.js')
-    js_args = [shared.PYTHON, shared.EMCC, opts] + llvm_opts + [fullname, '-o', filename + '.js'] + CSMITH_CFLAGS + args
+    js_args = [shared.PYTHON, shared.EMCC, opts] + llvm_opts + [fullname, '-o', filename + '.js'] + CSMITH_CFLAGS + args + ['-w']
     if random.random() < 0.5:
       js_args += ['-s', 'ALLOW_MEMORY_GROWTH=1']
-    if random.random() < 0.5:
+    if random.random() < 0.5 and 'ALLOW_MEMORY_GROWTH=1' not in js_args:
       js_args += ['-s', 'MAIN_MODULE=1']
     if random.random() < 0.25:
       js_args += ['-s', 'INLINING_LIMIT=1'] # inline nothing, for more call interaction
@@ -127,7 +127,7 @@ while 1:
     try:
       shared.check_execute(js_args)
       assert os.path.exists(filename + '.js')
-      return True
+      return js_args
     except:
       return False
 
@@ -144,7 +144,8 @@ while 1:
     fails += 1
     shutil.copyfile(fullname, 'newfail_%d_%d%s' % (os.getpid(), fails, suffix))
 
-  if not try_js():
+  js_args = try_js()
+  if not js_args:
     fail()
     continue
   if not execute_js(engine1):
@@ -155,7 +156,7 @@ while 1:
     continue
 
   # This is ok. Try validation in secondary JS engine
-  if opts != '-O0' and engine2:
+  if opts != '-O0' and 'ALLOW_MEMORY_GROWTH=1' not in js_args and engine2:
     try:
       js2 = shared.run_js(filename + '.js', stderr=PIPE, engine=engine2 + ['-w'], full_output=True, check_timeout=True, assert_returncode=None)
     except:

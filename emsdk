@@ -48,19 +48,58 @@ CPU_CORES = max(multiprocessing.cpu_count()-1, 1) # Don't saturate all cores to 
 
 CMAKE_BUILD_TYPE_OVERRIDE = None
 
+# If true, perform a --shallow clone of git.
 GIT_CLONE_SHALLOW = False
+
+# If true, LLVM backend is built with tests enabled.
+BUILD_LLVM_TESTS = False
 
 emscripten_config_directory = os.path.expanduser("~/")
 
 EMSDK_SET_ENV = 'emsdk_set_env.bat' if WINDOWS else 'emsdk_set_env.sh'
 
+# Finds the given executable 'program' in PATH. Operates like the Unix tool 'which'.
+def which(program):
+  def is_exe(fpath):
+    return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+  fpath, fname = os.path.split(program)
+  if fpath:
+    if is_exe(program):
+      return program
+  else:
+    for path in os.environ["PATH"].split(os.pathsep):
+      path = path.strip('"')
+      exe_file = os.path.join(path, program)
+      if is_exe(exe_file):
+        return exe_file
+
+      if WINDOWS and not '.' in fname:
+        if is_exe(exe_file + '.exe'):
+          return exe_file + '.exe'
+        if is_exe(exe_file + '.cmd'):
+          return exe_file + '.cmd'
+        if is_exe(exe_file + '.bat'):
+          return exe_file + '.bat'
+
+  return None
+
 CMAKE_GENERATOR = 'Unix Makefiles'
 if WINDOWS:
-  build_with_visualstudio = True
-  if build_with_visualstudio:
-    CMAKE_GENERATOR = 'Visual Studio 12'
+  # Detect which CMake generator to use when building on Windows
+  if '--mingw' in sys.argv: CMAKE_GENERATOR = 'MinGW Makefiles'
+  elif '--vs2013' in sys.argv: CMAKE_GENERATOR = 'Visual Studio 12'
+  elif '--vs2015' in sys.argv: CMAKE_GENERATOR = 'Visual Studio 14'
   else:
-    CMAKE_GENERATOR += 'MinGW Makefiles'
+    vs2015_exists = 'VS140COMNTOOLS' in os.environ or 'VSSDK140Install' in os.environ or os.path.isdir(os.path.join(os.environ['ProgramFiles'], 'Microsoft Visual Studio 14.0')) or ('ProgramFiles(x86)' in os.environ and os.path.isdir(os.path.join(os.environ['ProgramFiles(x86)'], 'Microsoft Visual Studio 14.0')))
+    vs2013_exists = 'VS120COMNTOOLS' in os.environ or os.path.isdir(os.path.join(os.environ['ProgramFiles'], 'Microsoft Visual Studio 12.0')) or ('ProgramFiles(x86)' in os.environ and os.path.isdir(os.path.join(os.environ['ProgramFiles(x86)'], 'Microsoft Visual Studio 12.0')))
+    mingw_exists = len(which('mingw32-make').strip()) > 0 and len(which('g++').strip()) > 0
+    if vs2013_exists: CMAKE_GENERATOR = 'Visual Studio 12' # Favor VS2013 over VS2015, since there is no big known difference, and VS2013 CRT is more widely available (for portable installation compatibility).
+    elif vs2015_exists: CMAKE_GENERATOR = 'Visual Studio 14'
+    elif mingw_exists: CMAKE_GENERATOR = 'MinGW Makefiles'
+    else: CMAKE_GENERATOR = '' # No detected generator
+if VERBOSE: print('CMAKE_GENERATOR: ' + CMAKE_GENERATOR)
+sys.argv = filter(lambda x: x not in ['--mingw', '--vs2013', '--vs2015'], sys.argv)
 
 # Removes a directory tree even if it was readonly, and doesn't throw exception on failure.
 def remove_tree(d):
@@ -354,32 +393,6 @@ def run_get_output(cmd, cwd=None):
   (stdout, stderr) = process.communicate()
   return (process.returncode, stdout, stderr)
 
-# Finds the given executable 'program' in PATH. Operates like the Unix tool 'which'.
-def which(program):
-  def is_exe(fpath):
-    return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
-
-  fpath, fname = os.path.split(program)
-  if fpath:
-    if is_exe(program):
-      return program
-  else:
-    for path in os.environ["PATH"].split(os.pathsep):
-      path = path.strip('"')
-      exe_file = os.path.join(path, program)
-      if is_exe(exe_file):
-        return exe_file
-
-      if WINDOWS and not '.' in fname:
-        if is_exe(exe_file + '.exe'):
-          return exe_file + '.exe'
-        if is_exe(exe_file + '.cmd'):
-          return exe_file + '.cmd'
-        if is_exe(exe_file + '.bat'):
-          return exe_file + '.bat'
-
-  return None
-
 # must_succeed: If false, the search is performed silently without printing out errors if not found. Empty string is returned if git is not found.
 #               If true, the search is required to succeed, and the execution will terminate with sys.exit(1) if not found.
 def GIT(must_succeed=True):
@@ -425,13 +438,17 @@ def git_clone(url, dstpath):
 
 def git_checkout_and_pull(repo_path, branch):
   if VERBOSE: print('git_checkout_and_pull(repo_path=' + repo_path + ', branch=' + branch + ')')
-  run([GIT(), 'fetch', 'origin'], repo_path)
+  ret = run([GIT(), 'fetch', 'origin'], repo_path)
+  if ret != 0: return False
   try:
     print("Fetching latest changes to the branch '" + branch + "' for '" + repo_path + "'...")
-    run([GIT(), 'fetch', 'origin'], repo_path)
+    ret = run([GIT(), 'fetch', 'origin'], repo_path)
+    if ret != 0: return False
 #  run([GIT, 'checkout', '-b', branch, '--track', 'origin/'+branch], repo_path)
-    run([GIT(), 'checkout', '--quiet', branch], repo_path) # this line assumes that the user has not gone and manually messed with the repo and added new remotes to ambiguate the checkout.
-    run([GIT(), 'merge', '--ff-only', 'origin/'+branch], repo_path) # this line assumes that the user has not gone and made local changes to the repo
+    ret = run([GIT(), 'checkout', '--quiet', branch], repo_path) # this line assumes that the user has not gone and manually messed with the repo and added new remotes to ambiguate the checkout.
+    if ret != 0: return False
+    ret = run([GIT(), 'merge', '--ff-only', 'origin/'+branch], repo_path) # this line assumes that the user has not gone and made local changes to the repo
+    if ret != 0: return False
   except:
     print('git operation failed!')
     return False
@@ -461,6 +478,7 @@ def fastcomp_build_dir(tool):
   if CMAKE_GENERATOR == 'Visual Studio 10': generator_suffix = '_vs2010'
   elif CMAKE_GENERATOR == 'Visual Studio 11': generator_suffix = '_vs2012'
   elif CMAKE_GENERATOR == 'Visual Studio 12': generator_suffix = '_vs2013'
+  elif CMAKE_GENERATOR == 'Visual Studio 14': generator_suffix = '_vs2015'
   elif CMAKE_GENERATOR == 'MinGW Makefiles': generator_suffix = '_mingw'
 
   bitness_suffix = '_32' if tool.bitness == 32 else '_64'
@@ -496,13 +514,20 @@ if OSX: cxxflags += '-stdlib=libc++'
 make_env['CXXFLAGS'] = cxxflags
 
 def find_msbuild(sln_file):
+  search_paths_vs2015 = [os.path.join(os.environ['ProgramFiles'], 'MSBuild/14.0/Bin/amd64'),
+                        os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/14.0/Bin/amd64'),
+                        os.path.join(os.environ['ProgramFiles'], 'MSBuild/14.0/Bin'),
+                        os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/14.0/Bin')]
   search_paths_vs2013 = [os.path.join(os.environ['ProgramFiles'], 'MSBuild/12.0/Bin/amd64'),
                         os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/12.0/Bin/amd64'),
                         os.path.join(os.environ['ProgramFiles'], 'MSBuild/12.0/Bin'),
-                        os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/12.0/Bin'),]
+                        os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/12.0/Bin')]
   search_paths_old = [os.path.join(os.environ["WINDIR"], 'Microsoft.NET/Framework/v4.0.30319')]
   contents = open(sln_file, 'r').read()
-  if '# Visual Studio Express 2013' in contents or '# Visual Studio 2013' in contents:
+  if '# Visual Studio Express 2015' in contents or '# Visual Studio 2015' in contents or '# Visual Studio 14' in contents:
+    search_paths = search_paths_vs2015
+    make_env['VCTargetsPath'] = os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/Microsoft.Cpp/v4.0/V140')
+  if '# Visual Studio Express 2013' in contents or '# Visual Studio 2013' in contents or '# Visual Studio 12' in contents:
     search_paths = search_paths_vs2013 + search_paths_old
     make_env['VCTargetsPath'] = os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/Microsoft.Cpp/v4.0/V120')
   else:
@@ -607,8 +632,10 @@ def build_fastcomp_tool(tool):
   build_type = decide_cmake_build_type(tool)
 
   # Configure
-  success = cmake_configure(cmake_generator, build_root, fastcomp_src_root, build_type, ['-DLLVM_TARGETS_TO_BUILD=X86;JSBackend', 
-        '-DLLVM_INCLUDE_EXAMPLES=OFF', '-DLLVM_INCLUDE_TESTS=OFF', '-DCLANG_INCLUDE_EXAMPLES=OFF', '-DCLANG_INCLUDE_TESTS=OFF'])
+  global BUILD_LLVM_TESTS
+  tests_arg = 'ON' if BUILD_LLVM_TESTS else 'OFF'
+  args = ['-DLLVM_TARGETS_TO_BUILD=X86;JSBackend', '-DLLVM_INCLUDE_EXAMPLES=OFF', '-DCLANG_INCLUDE_EXAMPLES=OFF', '-DLLVM_INCLUDE_TESTS=' + tests_arg, '-DCLANG_INCLUDE_TESTS=' + tests_arg]
+  success = cmake_configure(cmake_generator, build_root, fastcomp_src_root, build_type, args)
   if not success: return False
 
   # Make
@@ -618,7 +645,10 @@ def build_fastcomp_tool(tool):
 def optimizer_build_root(tool):
   build_root = tool.installation_path().strip()
   if build_root.endswith('/') or build_root.endswith('\\'): build_root = build_root[:-1]
-  build_root = build_root + '_' + str(tool.bitness) + 'bit_optimizer'
+  generator_prefix = '' # Unix Makefiles and Visual Studio 2013 do not specify a path prefix for backwards path compatibility
+  if CMAKE_GENERATOR == 'Visual Studio 14': generator_prefix = '_vs2015'
+  elif CMAKE_GENERATOR == 'MinGW Makefiles': generator_prefix = '_mingw'
+  build_root = build_root + generator_prefix + '_' + str(tool.bitness) + 'bit_optimizer'
   return build_root
 
 def uninstall_optimizer(tool):
@@ -639,13 +669,14 @@ def build_optimizer_tool(tool):
   build_type = decide_cmake_build_type(tool)
 
   # Configure
-  success = cmake_configure(None, build_root, src_root, build_type)
+  cmake_generator = CMAKE_GENERATOR
+  if 'Visual Studio' in CMAKE_GENERATOR and tool.bitness == 64:
+    cmake_generator += ' Win64'
+  success = cmake_configure(cmake_generator, build_root, src_root, build_type)
   if not success: return False
 
   # Make
-# TODO: Enable the following:
-#  success = make_build(build_root, build_type, 'x64' if tool.bitness == 64 else 'Win32')
-  success = make_build(build_root, build_type, 'Win32')
+  success = make_build(build_root, build_type, 'x64' if tool.bitness == 64 else 'Win32')
   return success
 
 def download_and_unzip(zipfile, dest_dir, download_even_if_exists=False, filename_prefix = ''):
@@ -715,27 +746,45 @@ def load_dot_emscripten():
 def generate_dot_emscripten(active_tools):
   global emscripten_config_directory
   if emscripten_config_directory == emsdk_path():
-    temp_dir = sdk_path('.tmp')
+    temp_dir = sdk_path('tmp')
     mkdir_p(temp_dir)
+    embedded = True
   else:
     temp_dir = tempfile.gettempdir().replace('\\', '/')
+    embedded = False
+
+  has_spidermonkey = False
+  has_node = False
 
   cfg = 'import os\n'
-  cfg += '''SPIDERMONKEY_ENGINE = ''
-NODE_JS = 'node'
-'''
+  
+  if embedded:
+    cfg += "emsdk_path=os.path.dirname(os.environ.get('EM_CONFIG')).replace('\\\\', '/')\n"
 
   for tool in active_tools:
     tool_cfg = tool.activated_config()
     if tool_cfg:
       tool_cfg = tool_cfg.replace(';', '\n')
+      if 'SPIDERMONKEY_ENGINE=' in tool_cfg: has_spidermonkey = True
+      if 'NODE_JS=' in tool_cfg: has_node = True
       cfg += tool_cfg + '\n'
+
+  # These two vars must always be defined, even though they might not exist.
+  if not has_spidermonkey: cfg += "SPIDERMONKEY_ENGINE = ''\n"
+  if not has_node:
+    node_fallback = which('nodejs')
+    if not node_fallback:
+      node_fallback = 'node'
+    cfg += "NODE_JS = '" + node_fallback + "'\n"
 
   cfg += '''V8_ENGINE = ''
 TEMP_DIR = ''' + "'" + temp_dir + "'" + '''
 COMPILER_ENGINE = NODE_JS
 JS_ENGINES = [NODE_JS]
 '''
+
+  if embedded:
+    cfg = cfg.replace(emscripten_config_directory, "' + emsdk_path + '")
 
   with open(dot_emscripten_path(), "w") as text_file: text_file.write(cfg)
   
@@ -868,10 +917,13 @@ class Tool:
       else:
         return False
     else:
-      if not hasattr(self, 'osx_url') and not hasattr(self, 'windows_url') and not hasattr(self, 'unix_url'):
+      if not hasattr(self, 'osx_url') and not hasattr(self, 'windows_url') and not hasattr(self, 'unix_url') and not hasattr(self, 'linux_url'):
         return True
 
     if OSX and hasattr(self, 'osx_url'):
+      return True
+
+    if LINUX and hasattr(self, 'linux_url'):
       return True
 
     if WINDOWS and (hasattr(self, 'windows_url') or hasattr(self, 'windows_install_path')):
@@ -986,6 +1038,8 @@ class Tool:
       return self.windows_url
     elif OSX and hasattr(self, 'osx_url'):
       return self.osx_url
+    elif LINUX and hasattr(self, 'linux_url'):
+      return self.linux_url
     elif (OSX or LINUX) and hasattr(self, 'unix_url'):
       return self.unix_url
     elif hasattr(self, 'url'):
@@ -1162,6 +1216,20 @@ def version_compare(x, y):
   return a - b
 
 def fetch_emscripten_tags():
+  git = GIT(must_succeed=False)
+  if not git:
+    print('Update complete, however skipped fetching the Emscripten tags, since git was not found.')
+    if WINDOWS:
+      print("If you want to compile one of the tagged releases from source, please install git by typing 'emsdk install git-1.9.4', or alternatively by installing it manually from http://git-scm.com/downloads . If you install git manually, remember to add it to PATH.")
+    elif OSX:
+      print("If you want to compile one of the tagged releases from source, please install git from http://git-scm.com/ , or by installing XCode and then the XCode Command Line Tools (see http://stackoverflow.com/questions/9329243/xcode-4-4-command-line-tools ).")
+    elif LINUX:
+      print("If you want to compile one of the tagged releases from source, please install git using your package manager, see http://git-scm.com/book/en/Getting-Started-Installing-Git .")
+    else:
+      print("If you want to compile one of the tagged releases from source, please install git.")
+    print("If you are not looking to build Emscripten from source, you can safely ignore this message.")
+    return
+
   print('Fetching all tags from Emscripten Github repository...')
   tags = run_get_output([GIT(), 'ls-remote', '--tags', emscripten_git_repo])
   if tags[0] != 0: return False # failed to get tags?
@@ -1365,7 +1433,7 @@ def adjusted_path(tools_to_activate, log_additions=False):
   new_path = [item for item in path_add if not normalized_contains(existing_path, item)]
   return (ENVPATH_SEPARATOR.join(unique_items(new_path + existing_path)), new_emsdk_tools)
 
-def construct_env_windows(tools_to_activate, permanent):
+def construct_env(tools_to_activate, permanent):
   global emscripten_config_directory
   env_string = ''
   newpath, added_path = adjusted_path(tools_to_activate)
@@ -1377,7 +1445,8 @@ def construct_env_windows(tools_to_activate, permanent):
 #  else:
 
   if os.environ['PATH'] != newpath: # Don't bother setting the path if there are no changes.
-    env_string += 'SET PATH=' + newpath + '\n'
+    if WINDOWS: env_string += 'SET PATH=' + newpath + '\n'
+    else: env_string += 'export PATH="' + newpath + '"\n'
     if len(added_path) > 0:
       print('Adding directories to PATH:')
       for item in added_path:
@@ -1404,48 +1473,16 @@ def construct_env_windows(tools_to_activate, permanent):
   if len(env_vars_to_add) > 0:
     print('Setting environment variables:')
     for key, value in env_vars_to_add:
-      if permanent:
-        env_string += 'SETX ' + key + ' "' + value + '"\n'
+      if WINDOWS:
+        if permanent:
+          env_string += 'SETX ' + key + ' "' + value + '"\n'
+        else:
+          env_string += 'SET ' + key + '=' + value + '\n'
       else:
-        env_string += 'SET ' + key + '=' + value + '\n'
+        env_string += 'export ' + key + '="' + value + '"\n'
       print(key + ' = ' + value)
     print('')
   return env_string
-
-def construct_env_unix(tools_to_activate):
-  env_string = ''
-  newpath, added_path = adjusted_path(tools_to_activate)
-
-  if os.environ['PATH'] != newpath: # Don't bother setting the path if there are no changes.
-    env_string += 'export PATH="' + newpath + '"\n'
-    if len(added_path) > 0:
-      print('Adding directories to PATH:')
-      for item in added_path:
-        print('PATH += ' + item)
-      print('')
-
-  env_vars_to_add = []
-  for tool in tools_to_activate:
-    if hasattr(tool, 'activated_env'):
-      (key, value) = parse_key_value(tool.activated_env)
-      value = to_native_path(tool.expand_vars(value))
-      if not key in os.environ or to_unix_path(os.environ[key]) != to_unix_path(value): # Don't set env. vars which are already set to the correct value.
-        env_vars_to_add += [(key, value)]
-
-  if len(env_vars_to_add) > 0:
-    print('Setting environment variables:')
-    for key, value in env_vars_to_add:
-      env_string += 'export ' + key + '="' + value + '"\n'
-      print(key + ' = ' + value)
-    print('')
-  return env_string
-
-
-def construct_env(tools_to_activate, permanent):
-  if WINDOWS:
-    return construct_env_windows(tools_to_activate, permanent)
-  else:
-    return construct_env_unix(tools_to_activate)
 
 def silentremove(filename):
   try:
@@ -1473,29 +1510,47 @@ def main():
    emsdk update                 - Fetches a list of updates from the net (but
                                   does not install them)
 
-   emsdk install [-j<num>] [--build=type] [--shallow] <tool/sdk>
-                                - Downloads and installs the given tool or SDK.
-                                  An optional -j<num> specifier can be used to
-                                  specify the number of cores to use when
-                                  building the tool. (default: use one less
-                                  than the # of detected cores)
+   emsdk install [options] <tool 1> <tool 2> <tool 3> ...
+                                - Downloads and installs given tools or SDKs.
+                                  Options can contain:
 
-                                  When installing tools from one of the git
+                         -j<num>: Specifies the number of cores to use when
+                                  building the tool. Default: use one less
+                                  than the # of detected cores.
+
+                  --build=<type>: Controls what kind of build of LLVM to
+                                  perform. Pass either 'Debug', 'Release',
+                                  'MinSizeRel' or 'RelWithDebInfo'. Default:
+                                  'Release' for LLVM master branch, and
+                                  'RelWithDebInfo' for LLVM incoming branch.
+
+                       --shallow: When installing tools from one of the git
                                   development branches 'master' or 'incoming',
-                                  you can specify the --shallow parameter
-                                  to perform a shallow git clone instead of a
-                                  full one. This reduces the amount of network
-                                  transfer that is needed. This option should
-                                  only be used when you are interested in
-                                  downloading one of the development branches,
-                                  but are not looking to develop Emscripten
-                                  yourself.
+                                  this parameter can be passed to perform a
+                                  shallow git clone instead of a full one.
+                                  This reduces the amount of network transfer
+                                  that is needed. This option should only be
+                                  used when you are interested in downloading
+                                  one of the development branches, but are not
+                                  looking to develop Emscripten yourself.
+                                  Default: disabled, i.e. do a full clone.
+
+                   --build-tests: If enabled, LLVM is built with internal tests
+                                  included. Pass this to enable running test
+                                  other.test_llvm_lit in the Emscripten test
+                                  suite. Default: disabled.
+               --vs2013/--vs2015: If building from source, overrides to build
+                                  using the specified compiler. When installing
+                                  precompiled packages, this has no effect.
+                                  Note: The same compiler specifier must be
+                                  passed to the emsdk activate command to
+                                  activate the desired version.
 
    emsdk uninstall <tool/sdk>   - Removes the given tool or SDK from disk.''')
 
     if WINDOWS:
       print('''
-   emsdk activate [--global] [--embedded] [--build=type] <tool/sdk> 
+   emsdk activate [--global] [--embedded] [--build=type] [--vs2013/--vs2015] <tool/sdk> 
 
                                 - Activates the given tool or SDK in the
                                   environment of the current shell. If the
@@ -1506,7 +1561,10 @@ def main():
                                   well as the temp, cache and ports directories
                                   are located inside the Emscripten SDK
                                   directory rather than the user home
-                                  directory.
+                                  directory. If a custom compiler version was
+                                  used to override the compiler to use, pass
+                                  the same --vs2013/--vs2015 parameter here to
+                                  choose which version to activate.
 
    emcmdprompt.bat              - Spawns a new command prompt window with the
                                   Emscripten environment active.''')
@@ -1629,7 +1687,7 @@ def main():
       print('Items marked with * are activated for the current user.')
       if has_partially_active_tools[0]:
         env_cmd = 'emsdk_env.bat' if WINDOWS else 'source ./emsdk_env.sh'
-        print('Items marked with (*) are selected for use, but your current shell environment is not configured to use them. Type "' + env_cmd + '" to set up your current shell to use them, or call "emsdk activate --global <name_of_sdk>" to permanently activate them.')
+        print('Items marked with (*) are selected for use, but your current shell environment is not configured to use them. Type "' + env_cmd + '" to set up your current shell to use them' + (', or call "emsdk activate --global <name_of_sdk>" to permanently activate them.' if WINDOWS else '.'))
       if not show_old:
         print('')
         print("To access the historical archived versions, type 'emsdk list --old'")
@@ -1704,19 +1762,24 @@ def main():
         global GIT_CLONE_SHALLOW
         GIT_CLONE_SHALLOW = True
         sys.argv[i] = ''
+      elif sys.argv[i] == '--build-tests':
+        global BUILD_LLVM_TESTS
+        BUILD_LLVM_TESTS = True
+        sys.argv[i] = ''
     sys.argv = [x for x in sys.argv if not len(x) == 0]
     if len(sys.argv) <= 2:
       print("Missing parameter. Type 'emsdk install <tool name>' to install a tool or an SDK. Type 'emsdk list' to obtain a list of available tools. Type 'emsdk install latest' to automatically install the newest version of the SDK.")
       return 1
-    tool = find_tool(sys.argv[2])
-    if tool == None:
-      tool = find_sdk(sys.argv[2])
-    if tool == None:
-      print("Error: No tool or SDK found by name '" + sys.argv[2] + "'.")
-      return 1
-    success = tool.install()
-    if not success:
-      return 1
+    for t in sys.argv[2:]:
+      tool = find_tool(t)
+      if tool == None:
+        tool = find_sdk(t)
+      if tool == None:
+        print("Error: No tool or SDK found by name '" + t + "'.")
+        return 1
+      success = tool.install()
+      if not success:
+        return 1
   elif cmd == 'uninstall':
     if len(sys.argv) <= 2:
       print("Syntax error. Call 'emsdk uninstall <tool name>'. Call 'emsdk list' to obtain a list of available tools.")

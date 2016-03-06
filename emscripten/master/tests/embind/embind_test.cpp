@@ -2606,7 +2606,6 @@ val construct_with_memory_view(val factory) {
 }
 
 val construct_with_ints_and_float(val factory) {
-    static const char data[11] = "0123456789";
     return factory.new_(65537, 4.0f, 65538);
 }
 
@@ -2791,4 +2790,19 @@ std::string getTypeOfVal(const val& v) {
 
 EMSCRIPTEN_BINDINGS(typeof) {
     function("getTypeOfVal", &getTypeOfVal);
+}
+
+struct HasStaticMember {
+    static const int c;
+    static int v;
+};
+
+const int HasStaticMember::c = 10;
+int HasStaticMember::v = 20;
+
+EMSCRIPTEN_BINDINGS(static_member) {
+    class_<HasStaticMember>("HasStaticMember")
+        .class_property("c", &HasStaticMember::c)
+        .class_property("v", &HasStaticMember::v)
+        ;
 }

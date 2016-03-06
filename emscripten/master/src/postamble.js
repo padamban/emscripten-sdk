@@ -1,6 +1,8 @@
 
 // === Auto-generated postamble setup entry stuff ===
 
+{{{ maybeExport('FS') }}}
+
 #if MEM_INIT_METHOD == 2
 #if USE_PTHREADS
 if (memoryInitializer && !ENVIRONMENT_IS_PTHREAD) (function(s) {
@@ -25,7 +27,7 @@ if (memoryInitializer) (function(s) {
   assert(crc === 0, "memory initializer checksum");
 #endif
   for (i = 0; i < n; ++i) {
-    HEAPU8[STATIC_BASE + i] = s.charCodeAt(i);
+    HEAPU8[Runtime.GLOBAL_BASE + i] = s.charCodeAt(i);
   }
 })(memoryInitializer);
 #else
@@ -42,42 +44,50 @@ if (memoryInitializer) {
   }
   if (ENVIRONMENT_IS_NODE || ENVIRONMENT_IS_SHELL) {
     var data = Module['readBinary'](memoryInitializer);
-    HEAPU8.set(data, STATIC_BASE);
+    HEAPU8.set(data, Runtime.GLOBAL_BASE);
   } else {
     addRunDependency('memory initializer');
     var applyMemoryInitializer = function(data) {
       if (data.byteLength) data = new Uint8Array(data);
 #if ASSERTIONS
       for (var i = 0; i < data.length; i++) {
-        assert(HEAPU8[STATIC_BASE + i] === 0, "area for memory initializer should not have been touched before it's loaded");
+        assert(HEAPU8[Runtime.GLOBAL_BASE + i] === 0, "area for memory initializer should not have been touched before it's loaded");
       }
 #endif
-      HEAPU8.set(data, STATIC_BASE);
+      HEAPU8.set(data, Runtime.GLOBAL_BASE);
+      // Delete the typed array that contains the large blob of the memory initializer request response so that
+      // we won't keep unnecessary memory lying around. However, keep the XHR object itself alive so that e.g.
+      // its .status field can still be accessed later.
+      if (Module['memoryInitializerRequest']) delete Module['memoryInitializerRequest'].response;
       removeRunDependency('memory initializer');
     }
-    var request = Module['memoryInitializerRequest'];
-    if (request) {
+    function doBrowserLoad() {
+      Module['readAsync'](memoryInitializer, applyMemoryInitializer, function() {
+        throw 'could not load memory initializer ' + memoryInitializer;
+      });
+    }
+    if (Module['memoryInitializerRequest']) {
       // a network request has already been created, just use that
-      if (request.response) {
-        setTimeout(function() {
-          applyMemoryInitializer(request.response);
-        }, 0); // it's already here; but, apply it asynchronously
+      function useRequest() {
+        var request = Module['memoryInitializerRequest'];
+        if (request.status !== 200 && request.status !== 0) {
+          // If you see this warning, the issue may be that you are using locateFile or memoryInitializerPrefixURL, and defining them in JS. That
+          // means that the HTML file doesn't know about them, and when it tries to create the mem init request early, does it to the wrong place.
+          // Look in your browser's devtools network console to see what's going on.
+          console.warn('a problem seems to have happened with Module.memoryInitializerRequest, status: ' + request.status + ', retrying ' + memoryInitializer);
+          doBrowserLoad();
+          return;
+        }
+        applyMemoryInitializer(request.response);
+      }
+      if (Module['memoryInitializerRequest'].response) {
+        setTimeout(useRequest, 0); // it's already here; but, apply it asynchronously
       } else {
-        request.addEventListener('load', function() { // wait for it
-          if (request.status !== 200 && request.status !== 0) {
-            console.warn('a problem seems to have happened with Module.memoryInitializerRequest, status: ' + request.status);
-          }
-          if (!request.response || typeof request.response !== 'object' || !request.response.byteLength) {
-            console.warn('a problem seems to have happened with Module.memoryInitializerRequest response (expected ArrayBuffer): ' + request.response);
-          }
-          applyMemoryInitializer(request.response);
-        });
+        Module['memoryInitializerRequest'].addEventListener('load', useRequest); // wait for it
       }
     } else {
       // fetch it from the network ourselves
-      Browser.asyncLoad(memoryInitializer, applyMemoryInitializer, function() {
-        throw 'could not load memory initializer ' + memoryInitializer;
-      });
+      doBrowserLoad();
     }
   }
 }
@@ -103,8 +113,10 @@ dependenciesFulfilled = function runCaller() {
 }
 
 Module['callMain'] = Module.callMain = function callMain(args) {
+#if ASSERTIONS
   assert(runDependencies == 0, 'cannot call main when async dependencies remain! (listen on __ATMAIN__)');
   assert(__ATPRERUN__.length == 0, 'cannot call main when preRun functions remain to be called');
+#endif
 
   args = args || [];
 
@@ -125,7 +137,9 @@ Module['callMain'] = Module.callMain = function callMain(args) {
   argv.push(0);
   argv = allocate(argv, 'i32', ALLOC_NORMAL);
 
-  initialStackTop = STACKTOP;
+#if EMTERPRETIFY_ASYNC
+  var initialEmtStackTop = asm.emtStackSave();
+#endif
 
   try {
 #if BENCHMARK
@@ -149,6 +163,10 @@ Module['callMain'] = Module.callMain = function callMain(args) {
     } else if (e == 'SimulateInfiniteLoop') {
       // running an evented main loop, don't immediately exit
       Module['noExitRuntime'] = true;
+#if EMTERPRETIFY_ASYNC
+      // an infinite loop keeps the C stack around, but the emterpreter stack must be unwound - we do not want to restore the call stack at infinite loop
+      asm.emtStackRestore(initialEmtStackTop);
+#endif
       return;
     } else {
       if (e && typeof e === 'object' && e.stack) Module.printErr('exception thrown: ' + [e, e.stack]);
@@ -188,9 +206,11 @@ function run(args) {
 
     preMain();
 
+#if ASSERTIONS
     if (ENVIRONMENT_IS_WEB && preloadStartTime !== null) {
       Module.printErr('pre-main prep time: ' + (Date.now() - preloadStartTime) + ' ms');
     }
+#endif
 
     if (Module['onRuntimeInitialized']) Module['onRuntimeInitialized']();
 
@@ -239,24 +259,9 @@ function exit(status, implicit) {
     if (Module['onExit']) Module['onExit'](status);
   }
 
-#if NODE_STDOUT_FLUSH_WORKAROUND
   if (ENVIRONMENT_IS_NODE) {
-    // Work around a node.js bug where stdout buffer is not flushed at process exit:
-    // Instead of process.exit() directly, wait for stdout flush event.
-    // See https://github.com/joyent/node/issues/1669 and https://github.com/kripken/emscripten/issues/2582
-    // Workaround is based on https://github.com/RReverser/acorn/commit/50ab143cecc9ed71a2d66f78b4aec3bb2e9844f6
-    process['stdout']['once']('drain', function () {
-      process['exit'](status);
-    });
-    console.log(' '); // Make sure to print something to force the drain event to occur, in case the stdout buffer was empty.
-    // Work around another node bug where sometimes 'drain' is never fired - make another effort
-    // to emit the exit status, after a significant delay (if node hasn't fired drain by then, give up)
-    setTimeout(function() {
-      process['exit'](status);
-    }, 500);
-  } else
-#endif
-  if (ENVIRONMENT_IS_SHELL && typeof quit === 'function') {
+    process['exit'](status);
+  } else if (ENVIRONMENT_IS_SHELL && typeof quit === 'function') {
     quit(status);
   }
   // if we reach here, we must throw an exception to halt the current execution
@@ -330,55 +335,63 @@ run();
 
 #if BUILD_AS_WORKER
 
-var messageBuffer = null;
-
-function messageResender() {
-  if (runtimeInitialized) {
-    assert(messageBuffer && messageBuffer.length > 0);
-    messageBuffer.forEach(function(message) {
-      onmessage(message);
-    });
-    messageBuffer = null;
-  } else {
-    setTimeout(messageResender, 100);
-  }
-}
-
-var buffer = 0, bufferSize = 0;
 var workerResponded = false, workerCallbackId = -1;
 
-onmessage = function onmessage(msg) {
-  // if main has not yet been called (mem init file, other async things), buffer messages
-  if (!runtimeInitialized) {
-    if (!messageBuffer) {
-      messageBuffer = [];
-      setTimeout(messageResender, 100);
+(function() {
+  var messageBuffer = null, buffer = 0, bufferSize = 0;
+
+  function flushMessages() {
+    if (!messageBuffer) return;
+    if (runtimeInitialized) {
+      var temp = messageBuffer;
+      messageBuffer = null;
+      temp.forEach(function(message) {
+        onmessage(message);
+      });
     }
-    messageBuffer.push(msg);
-    return;
   }
 
-  var func = Module['_' + msg.data['funcName']];
-  if (!func) throw 'invalid worker function to call: ' + msg.data['funcName'];
-  var data = msg.data['data'];
-  if (data) {
-    if (!data.byteLength) data = new Uint8Array(data);
-    if (!buffer || bufferSize < data.length) {
-      if (buffer) _free(buffer);
-      bufferSize = data.length;
-      buffer = _malloc(data.length);
+  function messageResender() {
+    flushMessages();
+    if (messageBuffer) {
+      setTimeout(messageResender, 100); // still more to do
     }
-    HEAPU8.set(data, buffer);
   }
 
-  workerResponded = false;
-  workerCallbackId = msg.data['callbackId'];
-  if (data) {
-    func(buffer, data.length);
-  } else {
-    func(0, 0);
+  onmessage = function onmessage(msg) {
+    // if main has not yet been called (mem init file, other async things), buffer messages
+    if (!runtimeInitialized) {
+      if (!messageBuffer) {
+        messageBuffer = [];
+        setTimeout(messageResender, 100);
+      }
+      messageBuffer.push(msg);
+      return;
+    }
+    flushMessages();
+
+    var func = Module['_' + msg.data['funcName']];
+    if (!func) throw 'invalid worker function to call: ' + msg.data['funcName'];
+    var data = msg.data['data'];
+    if (data) {
+      if (!data.byteLength) data = new Uint8Array(data);
+      if (!buffer || bufferSize < data.length) {
+        if (buffer) _free(buffer);
+        bufferSize = data.length;
+        buffer = _malloc(data.length);
+      }
+      HEAPU8.set(data, buffer);
+    }
+
+    workerResponded = false;
+    workerCallbackId = msg.data['callbackId'];
+    if (data) {
+      func(buffer, data.length);
+    } else {
+      func(0, 0);
+    }
   }
-}
+})();
 
 #endif
 

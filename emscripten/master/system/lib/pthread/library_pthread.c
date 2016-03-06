@@ -234,18 +234,26 @@ static uint32_t dummyZeroAddress = 0;
 
 int usleep(unsigned usec)
 {
+	int is_main_thread = emscripten_is_main_runtime_thread();
 	double now = emscripten_get_now();
 	double target = now + usec * 1e-3;
+#ifdef __EMSCRIPTEN__
+	emscripten_conditional_set_current_thread_status(EM_THREAD_STATUS_RUNNING, EM_THREAD_STATUS_SLEEPING);
+#endif
 	while(now < target) {
+		if (is_main_thread) emscripten_main_thread_process_queued_calls(); // Assist other threads by executing proxied operations that are effectively singlethreaded.
+		pthread_testcancel(); // pthreads spec: usleep is a cancellation point, so it must test if this thread is cancelled during the sleep.
+		now = emscripten_get_now();
 		double msecsToSleep = target - now;
 		if (msecsToSleep > 1.0) {
 			if (msecsToSleep > 100.0) msecsToSleep = 100.0;
-			pthread_testcancel(); // pthreads spec: usleep is a cancellation point, so it must test if this thread is cancelled during the sleep.
-			if (emscripten_is_main_runtime_thread()) emscripten_main_thread_process_queued_calls(); // Assist other threads by executing proxied operations that are effectively singlethreaded.
+			if (is_main_thread && msecsToSleep > 1) msecsToSleep = 1; // main thread may need to run proxied calls, so sleep in very small slices to be responsive.
 			emscripten_futex_wait(&dummyZeroAddress, 0, msecsToSleep);
 		}
-		now = emscripten_get_now();
 	}
+#ifdef __EMSCRIPTEN__
+	emscripten_conditional_set_current_thread_status(EM_THREAD_STATUS_SLEEPING, EM_THREAD_STATUS_RUNNING);
+#endif
 	return 0;
 }
 
@@ -253,142 +261,22 @@ static void _do_call(em_queued_call *q)
 {
 	switch(q->function)
 	{
-		case EM_PROXIED_FOPEN: q->returnValue.vp = (void*)fopen(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_FGETS: q->returnValue.cp = fgets(q->args[0].cp, q->args[1].i, (FILE*)q->args[2].vp); break;
-		case EM_PROXIED_FPUTS: q->returnValue.i = fputs(q->args[0].cp, (FILE*)q->args[1].vp); break;
-		case EM_PROXIED_FCLOSE: q->returnValue.i = fclose((FILE*)q->args[0].vp); break;
-		case EM_PROXIED_OPENDIR: q->returnValue.vp = opendir(q->args[0].cp); break;
-		case EM_PROXIED_CLOSEDIR: q->returnValue.i = closedir((DIR*)q->args[0].vp); break;
-		case EM_PROXIED_TELLDIR: q->returnValue.i = telldir((DIR*)q->args[0].vp); break;
-		case EM_PROXIED_SEEKDIR: seekdir((DIR*)q->args[0].vp, q->args[1].i); break;
-		case EM_PROXIED_REWINDDIR: rewinddir((DIR*)q->args[0].vp); break;
-		case EM_PROXIED_READDIR_R: q->returnValue.i = readdir_r((DIR*)q->args[0].vp, (struct dirent*)q->args[1].vp, (struct dirent**)q->args[2].vp); break;
-		case EM_PROXIED_READDIR: q->returnValue.vp = readdir((DIR*)q->args[0].vp); break;
 		case EM_PROXIED_UTIME: q->returnValue.i = utime(q->args[0].cp, (struct utimbuf*)q->args[1].vp); break;
 		case EM_PROXIED_UTIMES: q->returnValue.i = utimes(q->args[0].cp, (struct timeval*)q->args[1].vp); break;
-		case EM_PROXIED_STAT: q->returnValue.i = stat(q->args[0].cp, (struct stat*)q->args[1].vp); break;
-		case EM_PROXIED_LSTAT: q->returnValue.i = lstat(q->args[0].cp, (struct stat*)q->args[1].vp); break;
-		case EM_PROXIED_FSTAT: q->returnValue.i = fstat(q->args[0].i, (struct stat*)q->args[1].vp); break;
-		case EM_PROXIED_MKNOD: q->returnValue.i = mknod(q->args[0].cp, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_MKDIR: q->returnValue.i = mkdir(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_MKFIFO: q->returnValue.i = mkfifo(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_CHMOD: q->returnValue.i = chmod(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_FCHMOD: q->returnValue.i = fchmod(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_LCHMOD: q->returnValue.i = lchmod(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_UMASK: q->returnValue.i = umask(q->args[0].i); break;
-		case EM_PROXIED_STATVFS: q->returnValue.i = statvfs(q->args[0].cp, (struct statvfs*)q->args[1].vp); break;
-		case EM_PROXIED_FSTATVFS: q->returnValue.i = fstatvfs(q->args[0].i, (struct statvfs*)q->args[1].vp); break;
-		case EM_PROXIED_OPEN: q->returnValue.i = open(q->args[0].cp, q->args[1].i, q->args[2].vp); break;
-		case EM_PROXIED_CREAT: q->returnValue.i = creat(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_MKTEMP: q->returnValue.cp = mktemp(q->args[0].cp); break;
-		case EM_PROXIED_MKSTEMP: q->returnValue.i = mkstemp(q->args[0].cp); break;
-		case EM_PROXIED_MKDTEMP: q->returnValue.cp = mkdtemp(q->args[0].cp); break;
-		case EM_PROXIED_FCNTL: q->returnValue.i = fcntl(q->args[0].i, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_POSIX_FALLOCATE: q->returnValue.i = posix_fallocate(q->args[0].i, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_POLL: q->returnValue.i = poll((struct pollfd*)q->args[0].vp, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_ACCESS: q->returnValue.i = access(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_CHDIR: q->returnValue.i = chdir(q->args[0].cp); break;
-		case EM_PROXIED_CHOWN: q->returnValue.i = chown(q->args[0].cp, q->args[1].i, q->args[2].i); break;
 		case EM_PROXIED_CHROOT: q->returnValue.i = chroot(q->args[0].cp); break;
-		case EM_PROXIED_CLOSE: q->returnValue.i = close(q->args[0].i); break;
-		case EM_PROXIED_DUP: q->returnValue.i = dup(q->args[0].i); break;
-		case EM_PROXIED_DUP2: q->returnValue.i = dup2(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_FCHOWN: q->returnValue.i = fchown(q->args[0].i, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_FCHDIR: q->returnValue.i = fchdir(q->args[0].i); break;
-		case EM_PROXIED_CTERMID: q->returnValue.cp = ctermid(q->args[0].cp); break;
-		case EM_PROXIED_CRYPT: q->returnValue.cp = crypt(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_ENCRYPT: encrypt(q->args[0].cp, q->args[1].i); break;
 		case EM_PROXIED_FPATHCONF: q->returnValue.i = fpathconf(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_FSYNC: q->returnValue.i = fsync(q->args[0].i); break;
-		case EM_PROXIED_TRUNCATE: q->returnValue.i = truncate(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_FTRUNCATE: q->returnValue.i = ftruncate(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_GETCWD: q->returnValue.cp = getcwd(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_ISATTY: q->returnValue.i = isatty(q->args[0].i); break;
-		case EM_PROXIED_LCHOWN: q->returnValue.i = lchown(q->args[0].cp, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_LINK: q->returnValue.i = link(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_LOCKF: q->returnValue.i = lockf(q->args[0].i, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_LSEEK: q->returnValue.i = lseek(q->args[0].i, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_PIPE: q->returnValue.i = pipe((int*)q->args[0].vp); break;
-		case EM_PROXIED_PREAD: q->returnValue.i = pread(q->args[0].i, q->args[1].vp, q->args[2].i, q->args[2].i); break;
-		case EM_PROXIED_READ: q->returnValue.i = read(q->args[0].i, q->args[1].vp, q->args[2].i); break;
-		case EM_PROXIED_RMDIR: q->returnValue.i = rmdir(q->args[0].cp); break;
-		case EM_PROXIED_UNLINK: q->returnValue.i = unlink(q->args[0].cp); break;
-		case EM_PROXIED_TTYNAME: q->returnValue.cp = ttyname(q->args[0].i); break;
-		case EM_PROXIED_TTYNAME_R: q->returnValue.i = ttyname_r(q->args[0].i, q->args[1].cp, q->args[2].i); break;
-		case EM_PROXIED_SYMLINK: q->returnValue.i = symlink(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_READLINK: q->returnValue.i = readlink(q->args[0].cp, q->args[1].cp, q->args[2].i); break;
-		case EM_PROXIED_PWRITE: q->returnValue.i = pwrite(q->args[0].i, q->args[1].vp, q->args[2].i, q->args[3].i); break;
-		case EM_PROXIED_WRITE: q->returnValue.i = write(q->args[0].i, q->args[1].vp, q->args[2].i); break;
 		case EM_PROXIED_CONFSTR: q->returnValue.i = confstr(q->args[0].i, q->args[1].cp, q->args[2].i); break;
-		case EM_PROXIED_GETHOSTNAME: q->returnValue.i = gethostname(q->args[0].cp, q->args[1].i); break;
-		case EM_PROXIED_GETLOGIN: q->returnValue.cp = getlogin(); break;
-		case EM_PROXIED_GETLOGIN_R: q->returnValue.i = getlogin_r(q->args[0].cp, q->args[1].i); break;
 		case EM_PROXIED_SYSCONF: q->returnValue.i = sysconf(q->args[0].i); break;
 		case EM_PROXIED_SBRK: q->returnValue.vp = sbrk(q->args[0].i); break;
-		case EM_PROXIED_CLEARERR: clearerr(q->args[0].vp); break;
-		case EM_PROXIED_FDOPEN: q->returnValue.vp = fdopen(q->args[0].i, q->args[1].vp); break;
-		case EM_PROXIED_FEOF: q->returnValue.i = feof(q->args[0].vp); break;
-		case EM_PROXIED_FERROR: q->returnValue.i = ferror(q->args[0].vp); break;
-		case EM_PROXIED_FFLUSH: q->returnValue.i = fflush(q->args[0].vp); break;
-		case EM_PROXIED_FGETC: q->returnValue.i = fgetc(q->args[0].vp); break;
-		case EM_PROXIED_GETCHAR: q->returnValue.i = getchar(); break;
-		case EM_PROXIED_FGETPOS: q->returnValue.i = fgetpos(q->args[0].vp, q->args[1].vp); break;
-		case EM_PROXIED_GETS: q->returnValue.cp = gets(q->args[0].cp); break;
-		case EM_PROXIED_FILENO: q->returnValue.i = fileno(q->args[0].vp); break;
-		case EM_PROXIED_FPUTC: q->returnValue.i = fputc(q->args[0].i, q->args[1].vp); break;
-		case EM_PROXIED_PUTCHAR: q->returnValue.i = putchar(q->args[0].i); break;
-		case EM_PROXIED_PUTS: q->returnValue.i = puts(q->args[0].cp); break;
-		case EM_PROXIED_FREAD: q->returnValue.i = fread(q->args[0].vp, q->args[1].i, q->args[2].i, q->args[3].vp); break;
-		case EM_PROXIED_FREOPEN: q->returnValue.vp = freopen(q->args[0].cp, q->args[1].cp, q->args[2].vp); break;
-		case EM_PROXIED_FSEEK: q->returnValue.i = fseek(q->args[0].vp, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_FSETPOS: q->returnValue.i = fsetpos(q->args[0].vp, q->args[1].vp); break;
-		case EM_PROXIED_FTELL: q->returnValue.i = ftell(q->args[0].vp); break;
-		case EM_PROXIED_FWRITE: q->returnValue.i = fwrite(q->args[0].vp, q->args[1].i, q->args[2].i, q->args[3].vp); break;
-		case EM_PROXIED_POPEN: q->returnValue.vp = popen(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_PCLOSE: q->returnValue.i = pclose(q->args[0].vp); break;
-		case EM_PROXIED_PERROR: perror(q->args[0].cp); break;
-		case EM_PROXIED_REMOVE: q->returnValue.i = remove(q->args[0].cp); break;
-		case EM_PROXIED_RENAME: q->returnValue.i = rename(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_REWIND: rewind(q->args[0].vp); break;
-		case EM_PROXIED_TMPNAM: q->returnValue.cp = tmpnam(q->args[0].cp); break;
-		case EM_PROXIED_TEMPNAM: q->returnValue.cp = tempnam(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_TMPFILE: q->returnValue.vp = tmpfile(); break;
-		case EM_PROXIED_UNGETC: q->returnValue.i = ungetc(q->args[0].i, q->args[1].vp); break;
-		case EM_PROXIED_FSCANF: q->returnValue.i = fscanf(q->args[0].vp, q->args[1].cp, q->args[2].vp); break;
-		case EM_PROXIED_SCANF: q->returnValue.i = scanf(q->args[0].cp, q->args[1].vp); break;
-		case EM_PROXIED_FPRINTF: q->returnValue.i = fprintf(q->args[0].vp, q->args[1].cp); break;
-		case EM_PROXIED_PRINTF: q->returnValue.i = printf(q->args[0].cp); break;
-		case EM_PROXIED_DPRINTF: q->returnValue.i = dprintf(q->args[0].i, q->args[1].cp); break;
-		case EM_PROXIED_MMAP: q->returnValue.vp = mmap(q->args[0].vp, q->args[1].i, q->args[2].i, q->args[3].i, q->args[4].i, q->args[5].i); break;
-		case EM_PROXIED_MUNMAP: q->returnValue.i = munmap(q->args[0].vp, q->args[1].i); break;
 		case EM_PROXIED_ATEXIT: q->returnValue.i = atexit(q->args[0].vp); break;
 		case EM_PROXIED_GETENV: q->returnValue.cp = getenv(q->args[0].cp); break;
 		case EM_PROXIED_CLEARENV: q->returnValue.i = clearenv(); break;
 		case EM_PROXIED_SETENV: q->returnValue.i = setenv(q->args[0].cp, q->args[1].cp, q->args[2].i); break;
 		case EM_PROXIED_UNSETENV: q->returnValue.i = unsetenv(q->args[0].cp); break;
 		case EM_PROXIED_PUTENV: q->returnValue.i = putenv(q->args[0].cp); break;
-		case EM_PROXIED_REALPATH: q->returnValue.cp = realpath(q->args[0].cp, q->args[1].cp); break;
-		case EM_PROXIED_TCGETATTR: q->returnValue.i = tcgetattr(q->args[0].i, q->args[1].vp); break;
-		case EM_PROXIED_TCSETATTR: q->returnValue.i = tcsetattr(q->args[0].i, q->args[1].i, q->args[2].vp); break;
 		case EM_PROXIED_TZSET: tzset(); break;
-		case EM_PROXIED_SOCKET: q->returnValue.i = socket(q->args[0].i, q->args[1].i, q->args[2].i); break;
-		case EM_PROXIED_BIND: q->returnValue.i = bind(q->args[0].i, q->args[1].vp, q->args[2].i); break;
-		case EM_PROXIED_SENDMSG: q->returnValue.i = sendmsg(q->args[0].i, q->args[1].vp, q->args[2].i); break;
-		case EM_PROXIED_RECVMSG: q->returnValue.i = recvmsg(q->args[0].i, q->args[1].vp, q->args[2].i); break;
-		case EM_PROXIED_SHUTDOWN: q->returnValue.i = shutdown(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_IOCTL: q->returnValue.i = ioctl(q->args[0].i, q->args[1].i, q->args[2].vp); break;
-		case EM_PROXIED_ACCEPT: q->returnValue.i = accept(q->args[0].i, q->args[1].vp, q->args[2].vp); break;
-		case EM_PROXIED_SELECT: q->returnValue.i = select(q->args[0].i, q->args[1].vp, q->args[2].vp, q->args[3].vp, q->args[4].vp); break;
-		case EM_PROXIED_CONNECT: q->returnValue.i = connect(q->args[0].i, q->args[1].vp, q->args[1].i); break;
-		case EM_PROXIED_LISTEN: q->returnValue.i = listen(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_GETSOCKNAME: q->returnValue.i = getsockname(q->args[0].i, q->args[1].vp, q->args[2].vp); break;
-		case EM_PROXIED_GETPEERNAME: q->returnValue.i = getpeername(q->args[0].i, q->args[1].vp, q->args[2].vp); break;
-		case EM_PROXIED_SEND: q->returnValue.i = send(q->args[0].i, q->args[1].vp, q->args[2].i, q->args[3].i); break;
-		case EM_PROXIED_RECV: q->returnValue.i = recv(q->args[0].i, q->args[1].vp, q->args[2].i, q->args[3].i); break;
-		case EM_PROXIED_SENDTO: q->returnValue.i = sendto(q->args[0].i, q->args[1].vp, q->args[2].i, q->args[3].i, q->args[4].vp, q->args[5].i); break;
-		case EM_PROXIED_RECVFROM: q->returnValue.i = recvfrom(q->args[0].i, q->args[1].vp, q->args[2].i, q->args[3].i, q->args[4].vp, q->args[5].vp); break;
-		case EM_PROXIED_GETSOCKOPT: q->returnValue.i = getsockopt(q->args[0].i, q->args[1].i, q->args[2].i, q->args[3].vp, q->args[4].vp); break;
 		case EM_PROXIED_PTHREAD_CREATE: q->returnValue.i = pthread_create(q->args[0].vp, q->args[1].vp, q->args[2].vp, q->args[3].vp); break;
+		case EM_PROXIED_SYSCALL: q->returnValue.i = emscripten_syscall(q->args[0].i, q->args[1].vp); break;
 		default: assert(0 && "Invalid Emscripten pthread _do_call opcode!");
 	}
 	q->operationDone = 1;
@@ -419,9 +307,11 @@ void EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread(em_queued_call *cal
 	}
 	pthread_mutex_unlock(&call_queue_lock);
 	int r;
+	emscripten_set_current_thread_status(EM_THREAD_STATUS_WAITPROXY);
 	do {
 		r = emscripten_futex_wait(&call->operationDone, 0, INFINITY);
 	} while(r != 0 && call->operationDone == 0);
+	emscripten_set_current_thread_status(EM_THREAD_STATUS_RUNNING);
 }
 
 void * EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread_1(int function, void *arg1)
@@ -458,15 +348,8 @@ void * EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread_xprintf_varargs(i
 		len = vsnprintf(s, len+1, format, args);
 	}
 	em_queued_call q = { function, 0 };
-	if (function == EM_PROXIED_PRINTF)
-	{
-		q.args[0].vp = s;
-	}
-	else
-	{
-		q.args[0].vp = param0;
-		q.args[1].vp = s;
-	}
+	q.args[0].vp = param0;
+	q.args[1].vp = s;
 	q.returnValue.vp = 0;
 	emscripten_sync_run_in_main_thread(&q);
 	if (s != str) free(s);
@@ -518,6 +401,21 @@ void * EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread_6(int function, v
 	q.args[3].vp = arg4;
 	q.args[4].vp = arg5;
 	q.args[5].vp = arg6;
+	q.returnValue.vp = 0;
+	emscripten_sync_run_in_main_thread(&q);
+	return q.returnValue.vp;
+}
+
+void * EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread_7(int function, void *arg1, void *arg2, void *arg3, void *arg4, void *arg5, void *arg6, void *arg7)
+{
+	em_queued_call q = { function, 0 };
+	q.args[0].vp = arg1;
+	q.args[1].vp = arg2;
+	q.args[2].vp = arg3;
+	q.args[3].vp = arg4;
+	q.args[4].vp = arg5;
+	q.args[5].vp = arg6;
+	q.args[6].vp = arg7;
 	q.returnValue.vp = 0;
 	emscripten_sync_run_in_main_thread(&q);
 	return q.returnValue.vp;
@@ -751,4 +649,59 @@ uint64_t EMSCRIPTEN_KEEPALIVE _emscripten_atomic_fetch_and_xor_u64(void *addr, u
 	*(uint64_t *)addr = oldVal ^ val;
 	SPINLOCK_RELEASE(&emulated64BitAtomicsLocks[m&(NUM_64BIT_LOCKS-1)]);
 	return oldVal;
+}
+
+int llvm_memory_barrier()
+{
+	emscripten_atomic_fence();
+}
+
+int llvm_atomic_load_add_i32_p0i32(int *ptr, int delta)
+{
+	return emscripten_atomic_add_u32(ptr, delta) - delta;
+}
+
+uint64_t __atomic_load_8(void *ptr, int memmodel)
+{
+	return emscripten_atomic_load_u64(ptr);
+}
+
+uint64_t __atomic_store_8(void *ptr, uint64_t value, int memmodel)
+{
+	return emscripten_atomic_store_u64(ptr, value);
+}
+
+uint64_t __atomic_exchange_8(void *ptr, uint64_t value, int memmodel)
+{
+	return emscripten_atomic_exchange_u64(ptr, value);
+}
+
+uint64_t __atomic_compare_exchange_8(void *ptr, uint64_t *expected, uint64_t desired, int weak, int success_memmodel, int failure_memmodel)
+{
+	return emscripten_atomic_cas_u64(ptr, *expected, desired);
+}
+
+uint64_t __atomic_fetch_add_8(void *ptr, uint64_t value, int memmodel)
+{
+	return _emscripten_atomic_fetch_and_add_u64(ptr, value);
+}
+
+uint64_t __atomic_fetch_sub_8(void *ptr, uint64_t value, int memmodel)
+{
+	return _emscripten_atomic_fetch_and_sub_u64(ptr, value);
+}
+
+uint64_t __atomic_fetch_and_8(void *ptr, uint64_t value, int memmodel)
+{
+	return _emscripten_atomic_fetch_and_and_u64(ptr, value);
+}
+
+uint64_t __atomic_fetch_or_8(void *ptr, uint64_t value, int memmodel)
+{
+	return _emscripten_atomic_fetch_and_or_u64(ptr, value);
+}
+
+uint64_t __atomic_fetch_xor_8(void *ptr, uint64_t value, int memmodel)
+{
+	return _emscripten_atomic_fetch_and_xor_u64(ptr, value);
 }

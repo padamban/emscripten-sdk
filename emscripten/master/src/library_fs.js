@@ -1,17 +1,11 @@
 mergeInto(LibraryManager.library, {
-  $FS__deps: ['$ERRNO_CODES', '$ERRNO_MESSAGES', '__setErrNo', '$PATH', '$TTY', '$MEMFS', '$IDBFS', '$NODEFS', 'stdin', 'stdout', 'stderr', 'fflush'],
+  $FS__deps: ['$ERRNO_CODES', '$ERRNO_MESSAGES', '__setErrNo', '$PATH', '$TTY', '$MEMFS', '$IDBFS', '$NODEFS', '$WORKERFS', 'stdin', 'stdout', 'stderr'],
   $FS__postset: 'FS.staticInit();' +
                 '__ATINIT__.unshift(function() { if (!Module["noFSInit"] && !FS.init.initialized) FS.init() });' +
                 '__ATMAIN__.push(function() { FS.ignorePermissions = false });' +
                 '__ATEXIT__.push(function() { FS.quit() });' +
-                // export some names through closure
-                'Module["FS_createFolder"] = FS.createFolder;' +
-                'Module["FS_createPath"] = FS.createPath;' +
-                'Module["FS_createDataFile"] = FS.createDataFile;' +
-                'Module["FS_createPreloadedFile"] = FS.createPreloadedFile;' +
-                'Module["FS_createLazyFile"] = FS.createLazyFile;' +
-                'Module["FS_createLink"] = FS.createLink;' +
-                'Module["FS_createDevice"] = FS.createDevice;',
+                //Get module methods from settings
+                '{{{ EXPORTED_RUNTIME_METHODS.filter(function(func) { return func.substr(0, 3) === 'FS_' }).map(function(func){return 'Module["' + func + '"] = FS.' + func.substr(3) + ";"}).reduce(function(str, func){return str + func;}, '') }}}',
   $FS: {
     root: null,
     mounts: [],
@@ -35,6 +29,8 @@ mergeInto(LibraryManager.library, {
     },
     ErrnoError: null, // set during init
     genericErrors: {},
+    filesystems: null,
+    syncFSRequests: 0, // we warn if there are multiple in flight at once
 
     handleFSError: function(e) {
       if (!(e instanceof FS.ErrnoError)) throw e + ' : ' + stackTrace();
@@ -289,8 +285,7 @@ mergeInto(LibraryManager.library, {
     },
     // convert O_* bitmask to a string for nodePermissions
     flagsToPermissionString: function(flag) {
-      var accmode = flag & {{{ cDefine('O_ACCMODE') }}};
-      var perms = ['r', 'w', 'rw'][accmode];
+      var perms = ['r', 'w', 'rw'][flag & 3];
       if ((flag & {{{ cDefine('O_TRUNC') }}})) {
         perms += 'w';
       }
@@ -356,8 +351,8 @@ mergeInto(LibraryManager.library, {
       if (FS.isLink(node.mode)) {
         return ERRNO_CODES.ELOOP;
       } else if (FS.isDir(node.mode)) {
-        if ((flags & {{{ cDefine('O_ACCMODE') }}}) !== {{{ cDefine('O_RDONLY')}}} ||  // opening for write
-            (flags & {{{ cDefine('O_TRUNC') }}})) {
+        if (FS.flagsToPermissionString(flags) !== 'r' || // opening for write
+            (flags & {{{ cDefine('O_TRUNC') }}})) { // TODO: check for O_SEARCH? (== search for dir only)
           return ERRNO_CODES.EISDIR;
         }
       }
@@ -418,22 +413,6 @@ mergeInto(LibraryManager.library, {
     },
     closeStream: function(fd) {
       FS.streams[fd] = null;
-    },
-
-    //
-    // file pointers
-    //
-    // instead of maintaining a separate mapping from FILE* to file descriptors,
-    // we employ a simple trick: the pointer to a stream is its fd plus 1.  This
-    // means that all valid streams have a valid non-zero pointer while allowing
-    // the fs for stdin to be the standard value of zero.
-    //
-    //
-    getStreamFromPtr: function(ptr) {
-      return FS.streams[ptr - 1];
-    },
-    getPtrForStream: function(stream) {
-      return stream ? stream.fd + 1 : 0;
     },
 
     //
@@ -498,19 +477,31 @@ mergeInto(LibraryManager.library, {
         populate = false;
       }
 
+      FS.syncFSRequests++;
+
+      if (FS.syncFSRequests > 1) {
+        console.log('warning: ' + FS.syncFSRequests + ' FS.syncfs operations in flight at once, probably just doing extra work');
+      }
+
       var mounts = FS.getMounts(FS.root.mount);
       var completed = 0;
+
+      function doCallback(err) {
+        assert(FS.syncFSRequests > 0);
+        FS.syncFSRequests--;
+        return callback(err);
+      }
 
       function done(err) {
         if (err) {
           if (!done.errored) {
             done.errored = true;
-            return callback(err);
+            return doCallback(err);
           }
           return;
         }
         if (++completed >= mounts.length) {
-          callback(null);
+          doCallback(null);
         }
       };
 
@@ -838,7 +829,7 @@ mergeInto(LibraryManager.library, {
       if (!link.node_ops.readlink) {
         throw new FS.ErrnoError(ERRNO_CODES.EINVAL);
       }
-      return PATH.resolve(FS.getPath(lookup.node.parent), link.node_ops.readlink(link));
+      return PATH.resolve(FS.getPath(link.parent), link.node_ops.readlink(link));
     },
     stat: function(path, dontFollow) {
       var lookup = FS.lookupPath(path, { follow: !dontFollow });
@@ -998,6 +989,10 @@ mergeInto(LibraryManager.library, {
       if (FS.isChrdev(node.mode)) {
         flags &= ~{{{ cDefine('O_TRUNC') }}};
       }
+      // if asked only for a directory, then this must be one
+      if ((flags & {{{ cDefine('O_DIRECTORY') }}}) && !FS.isDir(node.mode)) {
+        throw new FS.ErrnoError(ERRNO_CODES.ENOTDIR);
+      }
       // check permissions, if this is not a file we just created now (it is ok to
       // create and write to a file with read-only permissions; it is read-only
       // for later use)
@@ -1054,6 +1049,7 @@ mergeInto(LibraryManager.library, {
       return stream;
     },
     close: function(stream) {
+      if (stream.getdents) stream.getdents = null; // free readdir state
       try {
         if (stream.stream_ops.close) {
           stream.stream_ops.close(stream);
@@ -1266,6 +1262,32 @@ mergeInto(LibraryManager.library, {
       FS.mkdir('/dev/shm');
       FS.mkdir('/dev/shm/tmp');
     },
+    createSpecialDirectories: function() {
+      // create /proc/self/fd which allows /proc/self/fd/6 => readlink gives the name of the stream for fd 6 (see test_unistd_ttyname)
+      FS.mkdir('/proc');
+      FS.mkdir('/proc/self');
+      FS.mkdir('/proc/self/fd');
+      FS.mount({
+        mount: function() {
+          var node = FS.createNode('/proc/self', 'fd', {{{ cDefine('S_IFDIR') }}} | 0777, {{{ cDefine('S_IXUGO') }}});
+          node.node_ops = {
+            lookup: function(parent, name) {
+              var fd = +name;
+              var stream = FS.getStream(fd);
+              if (!stream) throw new FS.ErrnoError(ERRNO_CODES.EBADF);
+              var ret = {
+                parent: null,
+                mount: { mountpoint: 'fake' },
+                node_ops: { readlink: function() { return stream.path } }
+              };
+              ret.parent = ret; // make it look like a simple root node
+              return ret;
+            }
+          };
+          return node;
+        }
+      }, {}, '/proc/self/fd');
+    },
     createStandardStreams: function() {
       // TODO deprecate the old functionality of a single
       // input / output callback and that utilizes FS.createDevice
@@ -1293,20 +1315,18 @@ mergeInto(LibraryManager.library, {
 
       // open default streams for the stdin, stdout and stderr devices
       var stdin = FS.open('/dev/stdin', 'r');
-      {{{ makeSetValue(makeGlobalUse('_stdin'), 0, 'FS.getPtrForStream(stdin)', 'void*') }}};
       assert(stdin.fd === 0, 'invalid handle for stdin (' + stdin.fd + ')');
 
       var stdout = FS.open('/dev/stdout', 'w');
-      {{{ makeSetValue(makeGlobalUse('_stdout'), 0, 'FS.getPtrForStream(stdout)', 'void*') }}};
       assert(stdout.fd === 1, 'invalid handle for stdout (' + stdout.fd + ')');
 
       var stderr = FS.open('/dev/stderr', 'w');
-      {{{ makeSetValue(makeGlobalUse('_stderr'), 0, 'FS.getPtrForStream(stderr)', 'void*') }}};
       assert(stderr.fd === 2, 'invalid handle for stderr (' + stderr.fd + ')');
     },
     ensureErrnoError: function() {
       if (FS.ErrnoError) return;
       FS.ErrnoError = function ErrnoError(errno, node) {
+        //Module.printErr(stackTrace()); // useful for debugging
         this.node = node;
         this.setErrno = function(errno) {
           this.errno = errno;
@@ -1340,6 +1360,14 @@ mergeInto(LibraryManager.library, {
 
       FS.createDefaultDirectories();
       FS.createDefaultDevices();
+      FS.createSpecialDirectories();
+
+      FS.filesystems = {
+        'MEMFS': MEMFS,
+        'IDBFS': IDBFS,
+        'NODEFS': NODEFS,
+        'WORKERFS': WORKERFS,
+      };
     },
     init: function(input, output, error) {
       assert(!FS.init.initialized, 'FS.init was previously called. If you want to initialize later with custom parameters, remove any earlier calls (note that one is automatically added to the generated code)');
@@ -1356,6 +1384,10 @@ mergeInto(LibraryManager.library, {
     },
     quit: function() {
       FS.init.initialized = false;
+      // force-flush all streams, so we get musl std streams printed out
+      var fflush = Module['_fflush'];
+      if (fflush) fflush(0);
+      // close all of our streams
       for (var i = 0; i < FS.streams.length; i++) {
         var stream = FS.streams[i];
         if (!stream) {
@@ -1577,6 +1609,8 @@ mergeInto(LibraryManager.library, {
         var datalength = Number(xhr.getResponseHeader("Content-length"));
         var header;
         var hasByteServing = (header = xhr.getResponseHeader("Accept-Ranges")) && header === "bytes";
+        var usesGzip = (header = xhr.getResponseHeader("Content-Encoding")) && header === "gzip";
+
 #if SMALL_XHR_CHUNKS
         var chunkSize = 1024; // Chunk size in bytes
 #else
@@ -1621,6 +1655,14 @@ mergeInto(LibraryManager.library, {
           return lazyArray.chunks[chunkNum];
         });
 
+        if (usesGzip || !datalength) {
+          // if the server uses gzip or doesn't supply the length, we have to download the whole file to get the (uncompressed) length
+          chunkSize = datalength = 1; // this will force getter(0)/doXHR do download the whole file
+          datalength = this.getter(0).length;
+          chunkSize = datalength;
+          console.log("LazyFiles on gzip forces download of the whole file when length is accessed");
+        }
+
         this._length = datalength;
         this._chunkSize = chunkSize;
         this.lengthKnown = true;
@@ -1628,21 +1670,23 @@ mergeInto(LibraryManager.library, {
       if (typeof XMLHttpRequest !== 'undefined') {
         if (!ENVIRONMENT_IS_WORKER) throw 'Cannot do synchronous binary XHRs outside webworkers in modern browsers. Use --embed-file or --preload-file in emcc';
         var lazyArray = new LazyUint8Array();
-        Object.defineProperty(lazyArray, "length", {
+        Object.defineProperties(lazyArray, {
+          length: {
             get: function() {
-                if(!this.lengthKnown) {
-                    this.cacheLength();
-                }
-                return this._length;
+              if(!this.lengthKnown) {
+                this.cacheLength();
+              }
+              return this._length;
             }
-        });
-        Object.defineProperty(lazyArray, "chunkSize", {
+          },
+          chunkSize: {
             get: function() {
-                if(!this.lengthKnown) {
-                    this.cacheLength();
-                }
-                return this._chunkSize;
+              if(!this.lengthKnown) {
+                this.cacheLength();
+              }
+              return this._chunkSize;
             }
+          }
         });
 
         var properties = { isDevice: false, contents: lazyArray };
@@ -1661,8 +1705,10 @@ mergeInto(LibraryManager.library, {
         node.url = properties.url;
       }
       // Add a function that defers querying the file size until it is asked the first time.
-      Object.defineProperty(node, "usedBytes", {
+      Object.defineProperties(node, {
+        usedBytes: {
           get: function() { return this.contents.length; }
+        }
       });
       // override each stream op with one that tries to force load the lazy file first
       var stream_ops = {};
@@ -1713,7 +1759,7 @@ mergeInto(LibraryManager.library, {
     // do preloading for the Image/Audio part, as if the typed array were the
     // result of an XHR that you did manually.
     createPreloadedFile: function(parent, name, url, canRead, canWrite, onload, onerror, dontCreateFile, canOwn, preFinish) {
-      Browser.init();
+      Browser.init(); // XXX perhaps this method should move onto Browser?
       // TODO we should allow people to just pass in a complete filename instead
       // of parent and name being that we just join them anyways
       var fullname = name ? PATH.resolve(PATH.join2(parent, name)) : parent;

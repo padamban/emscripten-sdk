@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 2.8)
 
 project(test_cmake)
 
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cpp_lib ${CMAKE_CURRENT_BINARY_DIR}/cpp_lib)
+
 file(GLOB sourceFiles main.cpp)
 
 file(GLOB preJsFiles pre*.js)
@@ -17,7 +19,7 @@ endif()
 # Test that the CMake-provided macro check_function_exists() works.
 include(CheckFunctionExists)
 check_function_exists("strtod" HAVE_STRTOD)
-if (NOT ${HAVE_STRTOD})
+if (NOT HAVE_STRTOD)
 	message(FATAL_ERROR "CMake script check_function_exists failed! Could not detect if strtod() is supported!")
 endif()
 
@@ -30,7 +32,7 @@ endif()
 # Test that the CMake-provided macro check_include_file() works.
 include(CheckIncludeFile)
 check_include_file(stdlib.h HAVE_STDLIB_H)
-if (NOT ${HAVE_STDLIB_H})
+if (NOT HAVE_STDLIB_H)
 	message(FATAL_ERROR "CMake script check_include_file failed! Could not find stdlib.h via it!")
 endif()
 
@@ -47,7 +49,7 @@ endif()
 # CMake built-in check_include_file() macro interacts with CMAKE_EXECUTABLE_SUFFIX, so make sure it works after user changes that.
 
 check_include_file(math.h HAVE_MATH_H)
-if (NOT ${HAVE_MATH_H})
+if (NOT HAVE_MATH_H)
 	message(FATAL_ERROR "CMake script check_include_file failed! Could not find math.h via it!")
 endif()
 
@@ -83,6 +85,7 @@ if(${CMAKE_VERSION} VERSION_GREATER 3.2.20150502)
 endif()
 
 add_executable(test_cmake ${sourceFiles})
+target_link_libraries( test_cmake cpp_lib)
 
 # GOTCHA: If your project has custom link flags, these must be set *before* calling any of the em_link_xxx functions!
 set_target_properties(test_cmake PROPERTIES LINK_FLAGS "${linkFlags}")

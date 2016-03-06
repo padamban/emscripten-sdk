@@ -98,22 +98,21 @@ var LibraryManager = {
 
     var libraries = [
       'library.js',
-      'library_formatString.js'
+      'library_browser.js',
+      'library_formatString.js',
+      'library_path.js',
+      'library_syscall.js'
     ];
     if (!NO_FILESYSTEM) {
       libraries = libraries.concat([
-        'library_path.js',
         'library_fs.js',
         'library_idbfs.js',
         'library_memfs.js',
         'library_nodefs.js',
         'library_sockfs.js',
-        'library_tty.js'
-      ]);
-    }
-    if (!NO_BROWSER) {
-      libraries = libraries.concat([
-        'library_browser.js'
+        'library_workerfs.js',
+        'library_tty.js',
+        'library_lz4.js',
       ]);
     }
     libraries = libraries.concat([
@@ -122,7 +121,6 @@ var LibraryManager = {
       'library_glut.js',
       'library_xlib.js',
       'library_egl.js',
-      'library_jansson.js',
       'library_openal.js',
       'library_glfw.js',
       'library_uuid.js',
@@ -135,6 +133,10 @@ var LibraryManager = {
     ]).concat(additionalLibraries);
 
     if (BOOTSTRAPPING_STRUCT_INFO) libraries = ['library_bootstrap_structInfo.js', 'library_formatString.js'];
+    if (ONLY_MY_CODE) {
+      libraries = [];
+      LibraryManager.library = {};
+    }
 
     for (var i = 0; i < libraries.length; i++) {
       var filename = libraries[i];
@@ -162,7 +164,9 @@ var LibraryManager = {
       if (typeof lib[x] === 'string') {
         var target = x;
         while (typeof lib[target] === 'string') {
-          if (lib[target].indexOf('(') >= 0) continue libloop;
+          // ignore code, aliases are just simple names
+          if (lib[target].search(/[({; ]/) >= 0) continue libloop;
+          // ignore trivial pass-throughs to Math.*
           if (lib[target].indexOf('Math_') == 0) continue libloop;
           target = lib[target];
         }
@@ -224,6 +228,17 @@ var LibraryManager = {
 function cDefine(key) {
 	if (key in C_DEFINES) return C_DEFINES[key];
 	throw 'XXX missing C define ' + key + '!';
+}
+
+var EXPORTED_RUNTIME_METHODS_SET = null;
+
+function maybeExport(name) {
+  if (!EXPORTED_RUNTIME_METHODS_SET) EXPORTED_RUNTIME_METHODS_SET = set(EXPORTED_RUNTIME_METHODS.concat(EXTRA_EXPORTED_RUNTIME_METHODS));
+  if (name in EXPORTED_RUNTIME_METHODS_SET) {
+    return 'Module["' + name + '"] = ' + name + ';';
+  } else {
+    return '';
+  }
 }
 
 var PassManager = {

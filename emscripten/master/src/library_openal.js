@@ -472,7 +472,7 @@ var LibraryOpenAL = {
           // Disconnect from the panner.
           src.gain.disconnect();
 
-          src.gain.connect(AL.currentContext.ctx.destination);
+          src.gain.connect(AL.currentContext.gain);
         }
       } else if (value === 0 /* AL_FALSE */) {
         if (!src.panner) {
@@ -484,7 +484,7 @@ var LibraryOpenAL = {
           panner.rolloffFactor = src.rolloffFactor;
           panner.setPosition(src.position[0], src.position[1], src.position[2]);
           panner.setVelocity(src.velocity[0], src.velocity[1], src.velocity[2]);
-          panner.connect(AL.currentContext.ctx.destination);
+          panner.connect(AL.currentContext.gain);
 
           // Disconnect from the default source.
           src.gain.disconnect();
@@ -860,7 +860,6 @@ var LibraryOpenAL = {
     }
   },
 
-  alSourcePlay__deps: ['setSourceState'],
   alSourcePlay: function(source) {
     if (!AL.currentContext) {
 #if OPENAL_DEBUG
@@ -879,7 +878,6 @@ var LibraryOpenAL = {
     AL.setSourceState(src, 0x1012 /* AL_PLAYING */);
   },
 
-  alSourceStop__deps: ['setSourceState'],
   alSourceStop: function(source) {
     if (!AL.currentContext) {
 #if OPENAL_DEBUG
@@ -898,7 +896,6 @@ var LibraryOpenAL = {
     AL.setSourceState(src, 0x1014 /* AL_STOPPED */);
   },
 
-  alSourceRewind__deps: ['setSourceState'],
   alSourceRewind: function(source) {
     if (!AL.currentContext) {
 #if OPENAL_DEBUG
@@ -920,7 +917,6 @@ var LibraryOpenAL = {
     AL.setSourceState(src, 0x1011 /* AL_INITIAL */);
   },
 
-  alSourcePause__deps: ['setSourceState'],
   alSourcePause: function(source) {
     if (!AL.currentContext) {
 #if OPENAL_DEBUG
@@ -973,6 +969,9 @@ var LibraryOpenAL = {
     case 0x1002 /* AL_CONE_OUTER_ANGLE */:
       {{{ makeSetValue('value', '0', 'src.coneOuterAngle', 'i32') }}};
       break;
+    case 0x1007 /* AL_LOOPING */:
+      {{{ makeSetValue('value', '0', 'src.loop', 'i32') }}};
+      break;
     case 0x1009 /* AL_BUFFER */:
       if (!src.queue.length) {
         {{{ makeSetValue('value', '0', '0', 'i32') }}};
@@ -1003,6 +1002,42 @@ var LibraryOpenAL = {
       }
       break;
     default:
+      AL.currentContext.err = 0xA002 /* AL_INVALID_ENUM */;
+      break;
+    }
+  },
+
+  alGetSourceiv__deps: ['alGetSourcei'],
+  alGetSourceiv: function(source, param, values) {
+    if (!AL.currentContext) {
+#if OPENAL_DEBUG
+      console.error("alGetSourceiv called without a valid context");
+#endif
+      return;
+    }
+    var src = AL.currentContext.src[source];
+    if (!src) {
+#if OPENAL_DEBUG
+      console.error("alGetSourceiv called with an invalid source");
+#endif
+      AL.currentContext.err = 0xA001 /* AL_INVALID_NAME */;
+      return;
+    }
+    switch (param) {
+    case 0x202 /* AL_SOURCE_RELATIVE */:
+    case 0x1001 /* AL_CONE_INNER_ANGLE */:
+    case 0x1002 /* AL_CONE_OUTER_ANGLE */:
+    case 0x1007 /* AL_LOOPING */:
+    case 0x1009 /* AL_BUFFER */:
+    case 0x1010 /* AL_SOURCE_STATE */:
+    case 0x1015 /* AL_BUFFERS_QUEUED */:
+    case 0x1016 /* AL_BUFFERS_PROCESSED */:
+      _alGetSourcei(source, param, values);
+      break;
+    default:
+#if OPENAL_DEBUG
+      console.error("alGetSourceiv with param " + param + " not implemented yet");
+#endif
       AL.currentContext.err = 0xA002 /* AL_INVALID_ENUM */;
       break;
     }
@@ -1063,6 +1098,7 @@ var LibraryOpenAL = {
     }
   },
 
+  alGetSourcefv__deps: ['alGetSourcef'],
   alGetSourcefv: function(source, param, values) {
     if (!AL.currentContext) {
 #if OPENAL_DEBUG
@@ -1079,6 +1115,21 @@ var LibraryOpenAL = {
       return;
     }
     switch (param) {
+    case 0x1003 /* AL_PITCH */:
+    case 0x100A /* AL_GAIN */:
+    case 0x100D /* AL_MIN_GAIN */:
+    case 0x100E /* AL_MAX_GAIN */:
+    case 0x1023 /* AL_MAX_DISTANCE */:
+    case 0x1021 /* AL_ROLLOFF_FACTOR */:
+    case 0x1022 /* AL_CONE_OUTER_GAIN */:
+    case 0x1001 /* AL_CONE_INNER_ANGLE */:
+    case 0x1002 /* AL_CONE_OUTER_ANGLE */:
+    case 0x1020 /* AL_REFERENCE_DISTANCE */:
+    case 0x1024 /* AL_SEC_OFFSET */:
+    case 0x1025 /* AL_SAMPLE_OFFSET */:
+    case 0x1026 /* AL_BYTE_OFFSET */:
+      _alGetSourcef(source, param, values);
+      break;
     case 0x1004 /* AL_POSITION */:
       var position = src.position;
       {{{ makeSetValue('values', '0', 'position[0]', 'float') }}}
@@ -1114,7 +1165,7 @@ var LibraryOpenAL = {
     }
   },
 
-  alGetListenerf: function(pname, values) {
+  alGetListenerf: function(pname, value) {
     if (!AL.currentContext) {
 #if OPENAL_DEBUG
       console.error("alGetListenerf called without a valid context");
@@ -1123,7 +1174,7 @@ var LibraryOpenAL = {
     }
     switch (pname) {
     case 0x100A /* AL_GAIN */:
-      {{{ makeSetValue('value', '0', 'AL.currentContext.gain.gain', 'float') }}}
+      {{{ makeSetValue('value', '0', 'AL.currentContext.gain.gain.value', 'float') }}}
       break;
     default:
 #if OPENAL_DEBUG
@@ -1199,7 +1250,7 @@ var LibraryOpenAL = {
     }
     switch (param) {
     case 0x100A /* AL_GAIN */:
-      AL.currentContext.gain.value = value;
+      AL.currentContext.gain.gain.value = value;
       break;
     default:
 #if OPENAL_DEBUG

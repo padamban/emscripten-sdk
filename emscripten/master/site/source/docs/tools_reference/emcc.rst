@@ -57,24 +57,26 @@ Options that are modified or new in *emcc* are listed below:
 ``-O2``
 	Like ``-O1``, but with various JavaScript-level optimizations and LLVM ``-O3`` optimizations. 
 	
-	.. note:: This is the recommended setting for a release build, offering slower compilation time in return for the smallest and fastest output.
+	.. note:: This is a reasonable setting for a release build.
 
-.. _emcc-Os: 
-	
-``-Os``
-	Like ``-O2``, but with extra optimizations that reduce code size at the expense of performance. This applies only for bitcode optimization (``-O2`` is used for JavaScript optimizations).
-
-.. _emcc-Oz: 
-	
-``-Oz``
-	Like ``-Os``, but reduces code size even further. This applies only for bitcode optimization (``-O2`` is used for JavaScript optimizations).
+	.. note:: These JavaScript optimizations can reduce code size by removing things that the compiler does not see being used, in particular, parts of the runtime may be stripped if they are not exported on the ``Module`` object. The compiler is aware of code in :ref:`--pre-js <emcc-pre-js>` and :ref:`--post-js <emcc-post-js>`, so you can safely use the runtime from there. Alternatively, you can use ``EXTRA_EXPORTED_RUNTIME_METHODS``, see `src/settings.js <https://github.com/kripken/emscripten/blob/master/src/settings.js>`_.
 
 .. _emcc-O3:
 
 ``-O3``
-	Like ``-O2``, but with additional JavaScript optimizations that can take a significant amount of compilation time and/or are relatively new. 
+	Like ``-O2``, but with additional JavaScript optimizations that can take a significant amount of compilation time.
+
+	.. note:: This is a good setting for a release build.
+
+.. _emcc-Os: 
 	
-	.. note:: This differs from ``-O2`` only during the bitcode to JavaScript (final link and JavaScript generation) stage. It is JavaScript-specific, so you can run ``-Os`` on your source files for example, and ``-O3`` during JavaScript generation if you want.
+``-Os``
+	Like ``-O3``, but with extra optimizations that reduce code size at the expense of performance. This can effect both bitcode generation and JavaScript.
+
+.. _emcc-Oz: 
+	
+``-Oz``
+	Like ``-Os``, but reduces code size even further. This can effect both bitcode generation and JavaScript.
 
  	.. note:: For more tips on optimizing your code, see :ref:`Optimizing-Code`.
 
@@ -191,15 +193,17 @@ Options that are modified or new in *emcc* are listed below:
 .. _emcc-js-opts: 
 	
 ``--js-opts <level>``
-	Enables JavaScript optimizations. Possible ``level`` values are:
+	Enables JavaScript optimizations, relevant when we generate JavaScript. Possible ``level`` values are:
 	 
 		- ``0``: Prevent JavaScript optimizer from running.
 		- ``1``: Use JavaScript optimizer (default).
 
+	You normally don't need to specify this option, as ``-O`` with an optimization level will set a good value.
+
 .. _emcc-llvm-opts: 
 		
 ``--llvm-opts <level>``
-	Enables LLVM optimizations. Possible ``level`` values are:
+	Enables LLVM optimizations, relevant when we call the LLVM optimizer (which is done when building source files to object files / bitcode). Possible ``level`` values are:
 	 
 		- ``0``: No LLVM optimizations (default in -O0).
 		- ``1``: LLVM ``-O1`` optimizations (default in -O1).
@@ -209,6 +213,8 @@ Options that are modified or new in *emcc* are listed below:
 	You can also specify arbitrary LLVM options, e.g.::
 	
 		--llvm-opts "['-O3', '-somethingelse']"
+
+	You normally don't need to specify this option, as ``-O`` with an optimization level will set a good value.
 
 .. _emcc-llvm-lto: 
 		
@@ -282,6 +288,9 @@ Options that are modified or new in *emcc* are listed below:
 ``--exclude-file <name>``
 	Files and directories to be excluded from :ref:`--embed-file <emcc-embed-file>` and :ref:`--preload-file <emcc-preload-file>`. Wildcards (*) are supported.
 
+``--use-preload-plugins``
+	Tells the file packager to run preload plugins on the files as they are loaded. This performs tasks like decoding images and audio using the browser's codecs.
+
 .. _emcc-shell-file:
 	
 ``--shell-file <path>``
@@ -291,20 +300,6 @@ Options that are modified or new in *emcc* are listed below:
 	
 		- See `src/shell.html <https://github.com/kripken/emscripten/blob/master/src/shell.html>`_ and `src/shell_minimal.html <https://github.com/kripken/emscripten/blob/master/src/shell_minimal.html>`_ for examples.                  
 		- This argument is ignored if a target other than HTML is specified using the ``-o`` option.
-	
-``--compression <codec>``
-	Compress both the compiled code and embedded/ preloaded files. 
-	
-	.. warning:: This option is deprecated.
-
-	``<codec>`` should be a triple: ``<native_encoder>,<js_decoder>,<js_name>``, where:
-
-		- ``native_encoder`` is a native executable that compresses ``stdin`` to ``stdout`` (the simplest possible interface).
-		- ``js_decoder`` is a JavaScript file that implements a decoder.
-		- ``js_name`` is the name of the function to call in the decoder file (which should receive an array/typed array and return an array/typed array. 
-		
-	Compression only works when generating HTML. When compression is on, all files specified to be preloaded are compressed in one big archive, which is given the same name as the output HTML but with suffix **.data.compress**.
-
 	
 .. _emcc-minify:
 						   
@@ -392,8 +387,8 @@ Options that are modified or new in *emcc* are listed below:
 			.. note:: If you assign a network request to ``Module.memoryInitializerRequest`` (before the script runs), then it will use that request instead of automatically starting a download for you. This is beneficial in that you can, in your HTML, fire off a request for the memory init file before the script actually arrives. For this to work, the network request should be an XMLHttpRequest with responseType set to ``'arraybuffer'``. (You can also put any other object here, all it must provide is a ``.response`` property containing an ArrayBuffer.) 
 
 	
-``-Wno-warn-absolute-paths``
-	Suppress warnings about the use of absolute paths in ``-I`` and ``-L`` command line directives. This is used to hide the warnings and acknowledge that the explicit use of absolute paths is intentional.
+``-Wwarn-absolute-paths``
+  Enables warnings about the use of absolute paths in ``-I`` and ``-L`` command line directives. This is used to warn against unintentional use of absolute paths, which is sometimes dangerous when referring to nonportable local system headers.
 	 
 ``--proxy-to-worker``
 	Runs the main application code in a worker, proxying events to it and output from it. If emitting HTML, this emits a **.html** file, and a separate **.js** file containing the JavaScript to be run in a worker. If emitting JavaScript, the target file name contains the part to be run on the main thread, while a second **.js** file with suffix ".worker.js" will contain the worker portion.
@@ -402,6 +397,15 @@ Options that are modified or new in *emcc* are listed below:
 	
 ``--emrun``
 	Enables the generated output to be aware of the :ref:`emrun <Running-html-files-with-emrun>` command line tool. This allows ``stdout``, ``stderr`` and ``exit(returncode)`` capture when running the generated application through *emrun*.     
+
+``--cpuprofiler``
+	Embeds a simple CPU profiler onto the generated page. Use this to perform cursory interactive performance profiling.
+
+``--memoryprofiler``
+	Embeds a memory allocation tracker onto the generated page. Use this to profile the application usage of the Emscripten HEAP.
+
+``--threadprofiler``
+	Embeds a thread activity profiler onto the generated page. Use this to profile the application usage of pthreads when targeting multithreaded builds (-s USE_PTHREADS=1/2).
 
 .. _emcc-config:
 	
@@ -437,6 +441,9 @@ Options that are modified or new in *emcc* are listed below:
 
 ``-c``
 	Tells *emcc* to generate LLVM bitcode (which can then be linked with other bitcode files), instead of compiling all the way to JavaScript.
+
+``--separate-asm``
+	Emits asm.js in one file, and the rest of the code in another, and emits HTML that loads the asm.js first, in order to reduce memory load during startup. See :ref:`optimizing-code-separating_asm`.
 
 	
 .. _emcc-environment-variables:

@@ -17,6 +17,10 @@ set(CMAKE_SYSTEM_VERSION 1)
 
 set(CMAKE_CROSSCOMPILING TRUE)
 
+# Advertise Emscripten as a 32-bit platform (as opposed to CMAKE_SYSTEM_PROCESSOR=x86_64 for 64-bit platform),
+# since some projects (e.g. OpenCV) use this to detect bitness.
+set(CMAKE_SYSTEM_PROCESSOR x86)
+
 # Tell CMake how it should instruct the compiler to generate multiple versions of an outputted .so library: e.g. "libfoo.so, libfoo.so.1, libfoo.so.1.4" etc.
 # This feature is activated if a shared library project has the property SOVERSION defined.
 set(CMAKE_SHARED_LIBRARY_SONAME_C_FLAG "-Wl,-soname,")
@@ -182,18 +186,11 @@ set(link_js_counter 1)
 
 # Internal function: Do not call from user CMakeLists.txt files. Use one of em_link_js_library()/em_link_pre_js()/em_link_post_js() instead.
 function(em_add_tracked_link_flag target flagname)
-	get_target_property(props ${target} LINK_FLAGS)
-	if(NOT props)
-	    set(props "")
-	endif()
 
 	# User can input list of JS files either as a single list, or as variable arguments to this function, so iterate over varargs, and treat each
 	# item in varargs as a list itself, to support both syntax forms.
 	foreach(jsFileList ${ARGN})
 		foreach(jsfile ${jsFileList})
-			# Add link command to the given JS file.
-			set(props "${props} ${flagname} \"${jsfile}\"")
-			
 			# If the user edits the JS file, we want to relink the emscripten application, but unfortunately it is not possible to make a link step
 			# depend directly on a source file. Instead, we must make a dummy no-op build target on that source file, and make the project depend on
 			# that target.
@@ -211,10 +208,16 @@ function(em_add_tracked_link_flag target flagname)
 			add_custom_command(OUTPUT ${dummy_c_name} COMMAND ${CMAKE_COMMAND} -E touch ${dummy_c_name} DEPENDS ${jsfile})
 			target_link_libraries(${target} ${dummy_lib_name})
 
+			# Link the js-library to the target
+			# When a linked library starts with a "-" cmake will just add it to the linker command line as it is.
+			# The advantage of doing it this way is that the js-library will also be automatically linked to targets
+			# that depend on this target.
+			get_filename_component(js_file_absolute_path "${jsfile}" ABSOLUTE )
+			target_link_libraries(${target} "${flagname} \"${js_file_absolute_path}\"")
+
 			math(EXPR link_js_counter "${link_js_counter} + 1")
 		endforeach()
 	endforeach()
-	set_target_properties(${target} PROPERTIES LINK_FLAGS "${props}")
 endfunction()
 
 # This function links a (list of ) .js library file(s) to the given CMake project.

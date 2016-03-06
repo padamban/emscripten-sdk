@@ -100,7 +100,7 @@ Calling compiled C functions from JavaScript
 				my_func(12)
 
 	:param ident: The name of the C function to be called.	
-	:param returnType: The return type of the function. This will be one of the JavaScript types ``number``, ``string`` or ``array`` (use ``number`` for any C pointer, and ``array`` for JavaScript arrays and typed arrays; note that arrays are 8-bit).
+	:param returnType: The return type of the function. This can be ``"number"``, ``"string"`` or ``"array"``, which correspond to the appropriate JavaScript types (use ``"number"`` for any C pointer, and ``"array"`` for JavaScript arrays and typed arrays; note that arrays are 8-bit), or for a void function it can be ``null`` (note: the JavaScript ``null`` value, not a string containing the word "null").
 	:param argTypes: An array of the types of arguments for the function (if there are no arguments, this can be omitted). Types are as in ``returnType``, except that ``array`` is not supported as there is no way for us to know the length of the array).
 	:returns: A JavaScript function that can be used for running the C function. 	
 
@@ -157,6 +157,24 @@ Conversion functions — strings, pointers and arrays
 	:rtype: String
 
 
+.. js:function:: UTF8ToString(ptr)
+
+	Given a pointer ``ptr`` to a null-terminated UTF8-encoded string in the Emscripten HEAP, returns a copy of that string as a JavaScript ``String`` object.
+
+	:param ptr: A pointer to a null-terminated UTF8-encoded string in the Emscripten HEAP.
+	:returns: A JavaScript ``String`` object
+	
+
+
+.. js:function:: stringToUTF8(str, outPtr[, maxBytesToWrite])
+
+	Copies the given JavaScript ``String`` object ``str`` to the Emscripten HEAP at address ``outPtr``, null-terminated and encoded in UTF8 form.
+
+	:param str: A JavaScript ``String`` object.
+	:type str: String
+	:param outPtr: Pointer to data copied from ``str``, encoded in UTF8 format and null-terminated.
+	:param maxBytesToWrite: A limit on the number of bytes to write out.
+
 
 .. js:function:: UTF16ToString(ptr)
 
@@ -167,7 +185,7 @@ Conversion functions — strings, pointers and arrays
 	
 
 
-.. js:function:: stringToUTF16(str, outPtr)
+.. js:function:: stringToUTF16(str, outPtr[, maxBytesToWrite])
 
 	Copies the given JavaScript ``String`` object ``str`` to the Emscripten HEAP at address ``outPtr``, null-terminated and encoded in UTF16LE form. 
 	
@@ -176,6 +194,7 @@ Conversion functions — strings, pointers and arrays
 	:param str: A JavaScript ``String`` object.
 	:type str: String
 	:param outPtr: Pointer to data copied from ``str``, encoded in UTF16LE format and null-terminated.
+	:param maxBytesToWrite: A limit on the number of bytes to write out.
 
 
 
@@ -187,7 +206,7 @@ Conversion functions — strings, pointers and arrays
 	:returns: A JavaScript ``String`` object.
 	
 
-.. js:function:: stringToUTF32(str, outPtr)
+.. js:function:: stringToUTF32(str, outPtr[, maxBytesToWrite])
 
 	Copies the given JavaScript ``String`` object ``str`` to the Emscripten HEAP at address ``outPtr``, null-terminated and encoded in UTF32LE form. 
 	
@@ -196,6 +215,7 @@ Conversion functions — strings, pointers and arrays
 	:param str: A JavaScript ``String`` object.
 	:type str: String
 	:param outPtr: Pointer to data copied from ``str``, encoded in encoded in UTF32LE format and null-terminated.
+	:param maxBytesToWrite: A limit on the number of bytes to write out.
 
 
 
@@ -339,12 +359,7 @@ The :ref:`emscripten-memory-model` uses a typed array buffer (``ArrayBuffer``) t
 
 .. js:data:: HEAPU8
 
-	View for 32-bit unsigned memory. 
-
-	
-.. js:data:: HEAPU8
-
-	View for 32-bit unsigned memory.
+	View for 8-bit unsigned memory. 
 
 	
 .. js:data:: HEAPU16

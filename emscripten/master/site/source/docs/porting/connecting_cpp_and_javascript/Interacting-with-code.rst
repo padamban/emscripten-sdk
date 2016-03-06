@@ -65,6 +65,13 @@ home directory::
 
     ./emcc tests/hello_function.cpp -o function.html -s EXPORTED_FUNCTIONS="['_int_sqrt']"
 
+.. note::
+
+   `EXPORTED_FUNCTIONS` affects compilation to JavaScript. If you first compile to an object file,
+   then compile the object to JavaScript, you need that option on the second command. If you do
+   it all together as in the example here (source straight to JavaScript) then this just works,
+   of course.
+
 After compiling, you can call this function with :js:func:`cwrap` using the
 following JavaScript::
 
@@ -73,7 +80,7 @@ following JavaScript::
     int_sqrt(28)
 
 The first parameter is the name of the function to be wrapped, the second is
-the return type of the function, and the third is an array of parameter
+the return type of the function (or a JavaScript `null` value if there isn't one), and the third is an array of parameter
 types (which may be omitted if there are no parameters). The types are
 native JavaScript types, "number" (for a C integer, float, or general
 pointer) or "string" (for a C ``char*`` that represents a string).
@@ -112,19 +119,67 @@ parameters to pass to the function:
 
      - Exporting is done at compile time. For example:
        ``-s EXPORTED_FUNCTIONS='["_main","_other_function"]'`` exports
-       ``main()`` and ``other_function()``. You need ``_`` at the
+       ``main()`` and ``other_function()``.
+     - Note that you need ``_`` at the
        beginning of the function names in the ``EXPORTED_FUNCTIONS`` list.
+     - Note that ``_main`` is mentioned in that list. If you don't have it there,
+       the compiler will eliminate it as dead code. The list of exported
+       functions is the **entire** list that will be kept alive (unless other
+       code was kept alive in another manner).
      - Emscripten does :ref:`dead code elimination <faq-dead-code-elimination>`
        to minimize code size — exporting ensures the functions you need
        aren't removed.
-     - At higher optimisation levels (``-O2`` and above), the
-       :term:`closure compiler` runs and minifies (changes) function names.
+     - At higher optimisation levels (``-O2`` and above), code is minified,
+       including function names.
        Exporting functions allows you to continue to access them using the
        original name through the global ``Module`` object.
+     - If you want to export a JS library function (something from a
+       ``src/library*.js`` file, for example), then in addition to
+       ``EXPORTED_FUNCTIONS``, you need to add it to ``DEFAULT_LIBRARY_FUNCS_TO_INCLUDE``,
+       as the latter will force the method to actually be included in
+       the build.
 
    - Use ``Module.ccall`` and not ``ccall`` by itself. The former will work
      at all optimisation levels (even if the :term:`Closure Compiler`
      minifies the function names).
+
+
+Interacting with an API written in C/C++ from NodeJS
+====================================================
+
+Say you have a C library that exposes some procedures:
+
+.. code:: c
+
+    //api_example.c
+    #include<stdio.h>
+    #include<emscripten.h>
+
+    EMSCRIPTEN_KEEPALIVE
+    void sayHi() {
+      printf("Hi!\n");
+    }
+
+    EMSCRIPTEN_KEEPALIVE
+    int daysInWeek() {
+      return 7;
+    }
+
+Compile the library with emcc:
+
+.. code:: bash
+
+    emcc api_example.c -o api_example.js
+
+Require the library and call its procedures from node:
+
+.. code:: javascript
+
+    var em_module = require('./api_example.js');
+
+    em_module._sayHi(); // direct calling works
+    em_module.ccall("sayHi"); // using ccall etc. also work
+    console.log(em_module._daysInWeek()); // values can be returned, etc.
 
 
 .. _interacting-with-code-direct-function-calls:
@@ -216,9 +271,18 @@ an alert, followed by an exception. (Note, however, that under the hood
 Emscripten still does a function call even in this case, which has some
 amount of overhead.)
 
-You can also send values from C into JavaScript inside :c:macro:`EM_ASM_`,
-as well as receive values back (see the :c:macro:`linked macro <EM_ASM_>`
-for details. The following example will print out ``I received: 100``
+You can also send values from C into JavaScript inside :c:macro:`EM_ASM_`
+(note the extra "_" at the end), for example
+
+.. code-block:: cpp
+
+      EM_ASM_({
+        Module.print('I received: ' + $0);
+      }, 100);
+
+This will show ``I received: 100``. 
+
+You can also receive values back, for example the following will print out ``I received: 100``
 and then ``101``.
 
 .. code-block:: cpp
@@ -228,6 +292,8 @@ and then ``101``.
         return $0 + 1;
       }, 100);
       printf("%d\n", x);
+
+See the :c:macro:`emscripten.h docs <EM_ASM_>` for more details.
 
 .. note::
 
@@ -251,8 +317,7 @@ Implement a C API in JavaScript
 ===============================
 
 It is possible to implement a C API in JavaScript! This is the approach
-that was used to write Emscripten's implementations of :term:`SDL` and
-*libc*.
+used in many of Emscripten's libraries, like SDL1 and OpenGL.
 
 You can use it to write your own APIs to call from C/C++. To do this
 you define the interface, decorating with ``extern`` to mark the methods
@@ -262,7 +327,7 @@ default). When compiling the C code, the compiler looks in the JavaScript
 libraries for relevant external symbols.
 
 By default, the implementation is added to **library.js** (and this is
-where you'll find the Emscripten implementation of *libc*). You can put
+where you'll find parts of Emscripten's *libc*). You can put
 the JavaScript implementation in your own library file and add it using
 the :ref:`emcc option <emcc-js-library>` ``--js-library``. See
 `test_js_libraries`_ in **tests/test_other.py** for a complete working
@@ -314,6 +379,173 @@ If you add it to your own file, you should write something like
 first, so this add ``my_js`` onto ``LibraryManager.library``, the global
 object where all JavaScript library code should be.
 
+JavaScript Limits in library files
+----------------------------------
+
+If you're not familar with JavaScript, say if you're a C/C++ programmer
+and just using emscripten, then the following issues probably won't come up, but
+if you're an experienced JavaScript programmer you need to be aware
+some common JavaScript practices can not be used in certain ways in emscripten
+library files.
+
+To save space, by default, emscripten only includes library properties
+referenced from C/C++. It does this by calling ``toString`` on each 
+used property on the JavaScript libraries that are linked in. That means
+that you can't use a closure directly, for example, as ``toString``
+isn't compatible with that - just like when using a string to create
+a Web Worker, where you also can't pass a closure. (Note that this
+limitation is just for the values for the keys of the object
+passes to ``mergeInto`` in the JS library, that is, the toplevel
+key-value pairs are special. Interior code inside a function can
+have arbitrary JS, of course).
+
+To avoid this limitation of JS libraries, you can put code in another file using
+the ``--pre-js`` or ``--post-js`` options, which allow arbitary normal
+JS, and it is included and optimized with the rest of the output. That is
+the recommended approach for most cases. Another option is another ``<script>`` tag.
+
+Alternatively, if you prefer to use a JS library file, you can
+have a function replace itself and have it called during
+initialization.
+
+.. code-block:: javascript
+
+   mergeInto(LibraryManager.library, {
+
+     // Solution for bind or referencing other functions directly
+     good_02__postset: '_good_02();',
+     good_02: function() {
+       _good_02 = document.querySelector.bind(document);
+     },
+     
+     // Solution for closures
+     good_03__postset: '_good_03();',
+     good_03: function() {
+       var callCount = 0;
+       _good_03 = function() {
+         console.log("times called: ", ++callCount);
+       };
+     },
+     
+     // Solution for curry/transform
+     good_05__postset: '_good_05();',
+     good_05: function() {
+       _good_05 = curry(scrollTo, 0);  
+    },
+
+   });
+
+A `__postset` is a string the compiler will emit directly to the
+output file. For the example above this code will be emited.
+
+.. code-block:: javascript
+
+     function _good_02() {
+       _good_o2 = document.querySelector.bind(document);
+     }
+     
+     function _good_03() {
+       var callCount = 0;
+       _good_03 = function() {
+         console.log("times called: ", ++callCount);
+       };
+     }
+     
+     function _good_05() {
+       _good_05 = curry(scrollTo, 0);  
+    };
+    
+    // Call each function once so it will replace itself
+    _good_02();
+    _good_03();
+    _good_05();
+
+You can also put most of your code in the ``xxx__postset`` strings. 
+The example below each method declares a dependency on ``$method_support``
+and are otherwise dummy functions. ``$method_support`` itself has a
+corresponding ``__postset`` property with all the code to set the
+various methods to the functions we actually want.
+
+.. code-block:: javascript
+
+  mergeInto(LibraryManager.library, {
+    $method_support: {},
+    $method_support__postset: [
+      '(function() {                                  ',
+      '  var SomeLib = function() {                   ',
+      '    this.callCount = 0;                        ',
+      '  };                                           ',
+      '                                               ',
+      '  SomeLib.prototype.getCallCount = function() {',
+      '    return this.callCount;                     ',
+      '  };                                           ',
+      '                                               ',
+      '  SomeLib.prototype.process = function() {     ',
+      '    ++this.callCount;                          ',
+      '  };                                           ',
+      '                                               ',
+      '  SomeLib.prototype.reset = function() {       ',
+      '    this.callCount = 0;                        ',
+      '  };                                           ',
+      '                                               ',
+      '  var inst = new SomeLib();                    ',
+      '  _method_01 = inst.getCallCount.bind(inst);   ',
+      '  _method_02 = inst.process.bind(inst);        ',
+      '  _method_03 = inst.reset.bind(inst);          ',
+      '}());                                          ',
+    ].join('\n'),
+    method_01: function() {}, 
+    method_01__deps: ['$method_support'],
+    method_02: function() {},
+    method_01__deps: ['$method_support'],
+    method_03: function() {},
+    method_01__deps: ['$method_support'],
+   });
+
+Note: If you are using node 4.1 or newer you can use multi-line strings.
+They are only used at compile time not runtime so output will still run in
+ES5 based environments.
+
+Another option is to put most of your code in an object, not
+a function,
+
+.. code-block:: javascript
+
+  mergeInto(LibraryManager.library, {
+    $method_support__postset: 'method_support();',
+    $method_support: {
+      init: function() {
+        var SomeLib = function() {                   
+          this.callCount = 0;                        
+        };                                           
+                                                     
+        SomeLib.prototype.getCallCount = function() {
+          return this.callCount;                     
+        };                                           
+                                                     
+        SomeLib.prototype.process = function() {     
+          ++this.callCount;                          
+        };                                           
+                                                     
+        SomeLib.prototype.reset = function() {       
+          this.callCount = 0;                        
+        };                                           
+                                                     
+        var inst = new SomeLib();                    
+        _method_01 = inst.getCallCount.bind(inst);   
+        _method_02 = inst.process.bind(inst);        
+        _method_03 = inst.reset.bind(inst);          
+      }                                         
+    },
+    method_01: function() {}, 
+    method_01__deps: ['$method_support'],
+    method_02: function() {},
+    method_01__deps: ['$method_support'],
+    method_03: function() {},
+    method_01__deps: ['$method_support'],
+   });
+
+
 See the `library_*.js`_ files for other examples.
 
 .. note::
@@ -331,6 +563,10 @@ See the `library_*.js`_ files for other examples.
    - If a JavaScript library depends on a compiled C library (like most
      of *libc*), you must edit `src/deps_info.json`_. Search for
      "deps_info" in `tools/system_libs.py`_.
+   - The keys passed into `mergeInto` generate functions that are prefixed
+     by ``_``. In other words ``my_func: function() {},`` becomes
+     ``function _my_func() {}``, as all C methods in emscripten have a ``_`` prefix. Keys starting with ``$`` have the ``$``
+     stripped and no underscore added.
 
 
 .. _interacting-with-code-call-function-pointers-from-c:

@@ -24,6 +24,7 @@ struct pthread {
 	int threadStatus; // 0: thread not exited, 1: exited.
 	int threadExitCode; // Thread exit code.
 	int tempDoublePtr[3]; // Temporary memory area for double operations in runtime.
+	void *profilerBlock; // If --threadprofiling is enabled, this pointer is allocated to contain internal information about the thread state for profiling purposes.
 #endif
 
 	struct pthread *self;
@@ -105,9 +106,7 @@ struct __timer {
 #define _b_waiters2 __u.__i[4]
 #define _b_inst __u.__p[3]
 
-#ifndef __EMSCRIPTEN__ // XXX Not currently used for Emscripten.
 #include "pthread_arch.h"
-#endif
 
 #define SIGTIMER 32
 #define SIGCANCEL 33

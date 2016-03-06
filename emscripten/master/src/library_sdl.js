@@ -10,7 +10,12 @@
 //                   or otherwise).
 
 var LibrarySDL = {
-  $SDL__deps: ['$FS', '$PATH', '$Browser', 'SDL_GetTicks'],
+  $SDL__deps: [
+#if NO_FILESYSTEM == 0
+    '$FS',
+#endif
+    '$PATH', '$Browser', 'SDL_GetTicks'
+  ],
   $SDL: {
     defaults: {
       width: 320,
@@ -1123,7 +1128,7 @@ var LibrarySDL = {
           // graph will send the onended signal, but we don't want to process that, since pausing should not clear/destroy the audio
           // channel.
           audio.webAudioNode['onended'] = undefined;
-          audio.webAudioNode.stop();
+          audio.webAudioNode.stop(0); // 0 is a default parameter, but WebKit is confused by it #3861
           audio.webAudioNode = undefined;
         } catch(e) {
           Module.printErr('pauseWebAudio failed: ' + e);
@@ -1257,6 +1262,8 @@ var LibrarySDL = {
     // Converts the double-based browser axis value [-1, 1] into SDL's 16-bit
     // value [-32768, 32767]
     joystickAxisValueConversion: function(value) {
+      // Make sure value is properly clamped
+      value = Math.min(1, Math.max(value, -1));
       // Ensures that 0 is 0, 1 is 32767, and -1 is 32768.
       return Math.ceil(((value+1) * 32767.5) - 32768);
     },
@@ -2151,7 +2158,7 @@ var LibrarySDL = {
         var raw = callStbImage('stbi_load_from_memory', [rwops.bytes, rwops.count]);
         if (!raw) return 0;
 #else
-        Runtime.warnOnce('Only file names that have been preloaded are supported for IMG_Load_RW. Consider using STB_IMAGE=1 if you want synchronous image decoding (see settings.js)');
+        Runtime.warnOnce('Only file names that have been preloaded are supported for IMG_Load_RW. Consider using STB_IMAGE=1 if you want synchronous image decoding (see settings.js), or package files with --use-preload-plugins');
         return 0;
 #endif
       }
@@ -2162,7 +2169,7 @@ var LibrarySDL = {
         if (!raw) {
           if (raw === null) Module.printErr('Trying to reuse preloaded image, but freePreloadedMediaOnUse is set!');
 #if STB_IMAGE
-          var name = Module['_malloc'](filename.length+1);
+          var name = Module['_malloc'](lengthBytesUTF8(filename)+1);
           writeStringToMemory(filename, name);
           addCleanup(function() {
             Module['_free'](name);
@@ -2171,7 +2178,7 @@ var LibrarySDL = {
           if (!raw) return 0;
 #else
           Runtime.warnOnce('Cannot find preloaded image ' + filename);
-          Runtime.warnOnce('Cannot find preloaded image ' + filename + '. Consider using STB_IMAGE=1 if you want synchronous image decoding (see settings.js)');
+          Runtime.warnOnce('Cannot find preloaded image ' + filename + '. Consider using STB_IMAGE=1 if you want synchronous image decoding (see settings.js), or package files with --use-preload-plugins');
           return 0;
 #endif
         } else if (Module['freePreloadedMediaOnUse']) {
@@ -2577,7 +2584,8 @@ var LibrarySDL = {
 
       if (type === 2/*SDL_RWOPS_STDFILE*/) {
         var fp = {{{ makeGetValue('rwopsID + ' + 28 /*hidden.stdio.fp*/, '0', 'i32') }}};
-        var stream = FS.getStreamFromPtr(fp);
+        var fd = Module['_fileno'](file);
+        var stream = FS.getStream(fd);
         if (stream) {
           rwops = { filename: stream.path };
         }
@@ -2951,7 +2959,7 @@ var LibrarySDL = {
   },
 
   TTF_OpenFont: function(filename, size) {
-    filename = FS.standardizePath(Pointer_stringify(filename));
+    filename = PATH.normalize(Pointer_stringify(filename));
     var id = SDL.fonts.length;
     SDL.fonts.push({
       name: filename, // but we don't actually do anything with it..

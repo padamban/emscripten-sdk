@@ -25,7 +25,7 @@ if WINDOWS: out_file += '.exe'
 cmd = [CLANG_CPP] + get_clang_native_args() + [path_from_root('tests', 'benchmark_sse1.cpp'), '-O3', '-o', out_file]
 print 'Building native version of the benchmark:'
 print ' '.join(cmd)
-build = Popen(cmd)
+build = Popen(cmd, env=get_clang_native_env())
 out = build.communicate()
 if build.returncode != 0:
     sys.exit(1)
@@ -35,7 +35,7 @@ print native_results[0]
 
 # Run emscripten build
 out_file = os.path.join(temp_dir, 'benchmark_sse1_html.html')
-cmd = [PYTHON, EMCC, path_from_root('tests', 'benchmark_sse1.cpp'), '-O3', '--emrun', '-s', 'TOTAL_MEMORY=536870912', '-o', out_file]
+cmd = [PYTHON, EMCC, path_from_root('tests', 'benchmark_sse1.cpp'), '-O3', '-msse', '--emrun', '-s', 'TOTAL_MEMORY=536870912', '-o', out_file]
 print 'Building Emscripten version of the benchmark:'
 print ' '.join(cmd)
 build = Popen(cmd)
@@ -100,9 +100,9 @@ native_workload = native_results['workload']
 html_workload = html_results['workload']
 
 html = '''<html><head></head><body><h1>SSE1 JavaScript Benchmark</h1>
-<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
-<script src="http://code.highcharts.com/highcharts.js"></script>
-<script src="http://code.highcharts.com/modules/exporting.js"></script><b>System Info:</b><br/>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
+<script src="https://code.highcharts.com/highcharts.js"></script>
+<script src="https://code.highcharts.com/modules/exporting.js"></script><b>System Info:</b><br/>
 ''' + system_info[0].replace('\n', '<br/>') + '''
 <b>Native Clang Compiler:</b><br/>
 ''' + native_info[1].replace('\n', '<br/>') + '''

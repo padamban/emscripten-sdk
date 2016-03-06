@@ -1,6 +1,22 @@
 
 // proxy to/from worker
 
+if (typeof Module === 'undefined') {
+  console.warn('no Module object defined - cannot proxy canvas rendering and input events, etc.');
+  Module = {
+    print: function(x) {
+      console.log(x);
+    },
+    printErr: function(x) {
+      console.log(x);
+    },
+    canvas: {
+      addEventListener: function() {},
+      getBoundingClientRect: function() { return { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0 } },
+    },
+  };
+}
+
 // utils
 
 function FPSTracker(text) {
@@ -86,7 +102,13 @@ var worker = new Worker('{{{ filename }}}.js');
 WebGLClient.prefetch();
 
 setTimeout(function() {
-  worker.postMessage({ target: 'worker-init', width: Module.canvas.width, height: Module.canvas.height, URL: document.URL, preMain: true });
+  worker.postMessage({
+    target: 'worker-init',
+    width: Module.canvas.width,
+    height: Module.canvas.height,
+    boundingClientRect: cloneObject(Module.canvas.getBoundingClientRect()),
+    URL: document.URL,
+    preMain: true });
 }, 0); // delay til next frame, to make sure html is ready
 
 var workerResponded = false;
@@ -138,6 +160,10 @@ worker.onmessage = function worker_onmessage(event) {
             renderFrameData = data.image.data;
             window.requestAnimationFrame(renderFrame);
           }
+          break;
+        }
+        case 'setObjectProperty': {
+          Module.canvas[data.object][data.property] = data.value;
           break;
         }
         default: throw 'eh?';
@@ -211,10 +237,23 @@ function cloneObject(event) {
   return ret;
 };
 
+// Only prevent default on backspace/tab because we don't want unexpected navigation.
+// Do not prevent default on the rest as we need the keypress event.
+function shouldPreventDefault(event) {
+  if (event.type === 'keydown' && event.keyCode !== 8 /* backspace */ && event.keyCode !== 9 /* tab */) {
+    return false; // keypress, back navigation
+  } else {
+    return true; // NO keypress, NO back navigation
+  }
+};
+
 ['keydown', 'keyup', 'keypress', 'blur', 'visibilitychange'].forEach(function(event) {
   document.addEventListener(event, function(event) {
     worker.postMessage({ target: 'document', event: cloneObject(event) });
-    event.preventDefault();
+    
+    if (shouldPreventDefault(event)) {
+      event.preventDefault();
+    }
   });
 });
 
