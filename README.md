@@ -9,9 +9,9 @@ You can also set up Emscripten from source, without the pre-built SDK, see "Inst
 To get started with Emscripten development, grab one of the packages below:
 
 Windows:
-* Emscripten SDK Web Installer (64-bit) is a NSIS installer that always gets you the latest Emscripten SDK from the web:
+* Emscripten SDK Web Installer (64-bit) is an NSIS installer that always gets you the latest Emscripten SDK from the web:
   * [emsdk-1.35.0-web-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-web-64bit.exe)
-* Emscripten SDK Offline Installer (64-bit) is a NSIS installer that bundles together the Emscripten toolchain as an offline-installable package:
+* Emscripten SDK Offline Installer (64-bit) is an NSIS installer that bundles together the Emscripten toolchain as an offline-installable package:
   * [emsdk-1.35.0-full-64bit.exe](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-full-64bit.exe)
 * Portable Emscripten SDK (64-bit) is a zipped package of the Emscripten SDK that does not require system installation privileges. Just unzip and go:
   * [emsdk-1.35.0-portable-64bit.zip](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-1.35.0-portable-64bit.zip)
@@ -19,15 +19,15 @@ Windows:
 Linux and Mac OS X:
 * [emsdk-portable.tar.gz](https://s3.amazonaws.com/mozilla-games/emscripten/releases/emsdk-portable.tar.gz): Emscripten SDK is available as a portable web-installer for Linux and OS X.
 
-**Old Releases** are available in the **Archived Releases** section below. 
+**Old Releases** are available in the **Archived Releases** section below.
 
 ## Installation Instructions
 
 Check one of the topics below for what to do with the package you just downloaded.
 
-#### Windows: Installing using a NSIS Installer
+#### Windows: Installing using an NSIS Installer
 
-The NSIS installers register the Emscripten SDK as a 'standard' Windows application. To install the SDK, download a NSIS .exe file above, double-click on it, and run through the installer to perform the installation. After the installer finishes, the full Emscripten toolchain will be available in the directory that was chosen during the installation, and no other steps are necessary. If your system has Visual Studio 2010 installed, the vs-tool MSBuild plugin will be automatically installed as well.
+The NSIS installers register the Emscripten SDK as a 'standard' Windows application. To install the SDK, download an NSIS .exe file above, double-click on it, and run through the installer to perform the installation. After the installer finishes, the full Emscripten toolchain will be available in the directory that was chosen during the installation, and no other steps are necessary. If your system has Visual Studio 2010 installed, the vs-tool MSBuild plugin will be automatically installed as well.
 
 #### Windows, OSX and Linux: Installing the Portable SDK
 
@@ -141,6 +141,12 @@ Emsdk contains a history of old compiler versions that you can use to maintain y
 
 On Windows, you can directly install an old SDK version by using one of the archived offline NSIS installers. See the **Archived Releases** section down below.
 
+##### When working on git branches compiled from source, how do I update to a newer compiler version?
+
+Unlike tags and precompiled versions, a few of the SDK packages are based on "moving" git branches and compiled from source (sdk-incoming, sdk-master, emscripten-incoming, emscripten-master, binaryen-master). Because of that, the compiled versions will eventually go out of date as new commits are introduced to the development branches. To update an old compiled installation of one of this branches, simply reissue the "emsdk install" command on that package. This will `git pull` the latest changes to the branch and issue an incremental recompilation of the target in question. This way you can keep calling `emsdk install` to keep an Emscripten installation up to date with a given git branch.
+
+Note though that if the previously compiled branch is very old, sometimes CMake gets confused and is unable to properly rebuild a project. This has happened in the past e.g. when LLVM migrated to requiring a newer CMake version. In cases of any odd compilation errors, it is advised to try deleting the intermediate build directory to clear the build (e.g. "emsdk/clang/fastcomp/build_xxx/") before reissuing `emsdk install`.
+
 ##### How do I change the currently active SDK version?
 
 You can toggle between different tools and SDK versions by running `emsdk activate <tool/sdk name>`. Activating a tool will set up `~/.emscripten` to point to that particular tool. On Windows, you can pass the option `--global` to the `activate` command to register the environment permanently to the system registry for all users.
@@ -173,9 +179,17 @@ It is also possible to use your own fork of the Emscripten repository via the SD
 
 In this way you can utilize the Emscripten SDK tools while using your own git fork. You can switch back and forth between remotes via the `git checkout` command as usual.
 
+##### How do I use Emscripten SDK with a custom version of python, java, node.js or some other tool?
+
+The provided Emscripten SDK targets are metapackages that refer to a specific set of tools that have been tested to work together. For example, `sdk-1.35.0-64bit` is an alias to the individual packages `clang-e1.35.0-64bit`, `node-4.1.1-64bit`, `python-2.7.5.3-64bit` and `emscripten-1.35.0`. This means that if you install this version of the SDK, both python and node.js will be installed inside emsdk as well. If you want to use your own/system python or node.js instead, you can opt to install emsdk by specifying the individual set of packages that you want to use. For example, `emsdk install clang-e1.35.0-64bit emscripten-1.35.0` will only install the Emscripten LLVM/Clang compiler and the Emscripten frontend without supplying python and node.js.
+
+##### My installation fails with "fatal error: ld terminated with signal 9 [Killed]"?
+
+This may happen if the system runs out of memory. If you are attempting to build one of the packages from source and are running in a virtual OS or have relatively little RAM and disk space available, then the build might fail. Try feeding your computer more memory. Another thing to try is to force emsdk install to build in a singlethreaded mode, which will require less RAM simultaneously. To do this, pass the `-j1` flag to the `emsdk install` command.
+
 ## Uninstalling the Emscripten SDK
 
-If you installed the SDK using a NSIS installer on Windows, launch 'Control Panel' -> 'Uninstall a program' -> 'Emscripten SDK'.
+If you installed the SDK using an NSIS installer on Windows, launch 'Control Panel' -> 'Uninstall a program' -> 'Emscripten SDK'.
 
 If you want to remove a Portable SDK, just delete the directory where you put the Portable SDK into.
 
