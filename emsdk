@@ -25,6 +25,7 @@ else:
 emsdk_packages_url = urljoin(emsdk_master_server, 'packages/')
 
 emscripten_git_repo = 'https://github.com/kripken/emscripten/'
+binaryen_git_repo = 'https://github.com/WebAssembly/binaryen/'
 
 # Enable this to do very verbose printing about the different steps that are being run. Useful for debugging.
 VERBOSE = bool(os.getenv('EMSDK_VERBOSE')) if os.getenv('EMSDK_VERBOSE') != None else False
@@ -51,10 +52,22 @@ CMAKE_BUILD_TYPE_OVERRIDE = None
 # If true, perform a --shallow clone of git.
 GIT_CLONE_SHALLOW = False
 
-# If true, LLVM backend is built with tests enabled.
-BUILD_LLVM_TESTS = False
+# If true, LLVM backend is built with tests enabled, and Binaryen is built with Visual Studio static analyzer enabled.
+BUILD_FOR_TESTING = False
+
+# If 'auto', assertions are decided by the build type (Release&MinSizeRel=disabled, Debug&RelWithDebInfo=enabled)
+# Other valid values are 'ON' and 'OFF'
+ENABLE_LLVM_ASSERTIONS = 'auto'
+
+def to_unix_path(p):
+  return p.replace('\\', '/')
+
+def emsdk_path(): return to_unix_path(os.path.dirname(os.path.realpath(__file__)))
 
 emscripten_config_directory = os.path.expanduser("~/")
+# If .emscripten exists, we are configuring as embedded inside the emsdk directory.
+if os.path.exists(os.path.join(emsdk_path(), '.emscripten')):
+  emscripten_config_directory = emsdk_path()
 
 EMSDK_SET_ENV = 'emsdk_set_env.bat' if WINDOWS else 'emsdk_set_env.sh'
 
@@ -93,13 +106,19 @@ if WINDOWS:
   else:
     vs2015_exists = 'VS140COMNTOOLS' in os.environ or 'VSSDK140Install' in os.environ or os.path.isdir(os.path.join(os.environ['ProgramFiles'], 'Microsoft Visual Studio 14.0')) or ('ProgramFiles(x86)' in os.environ and os.path.isdir(os.path.join(os.environ['ProgramFiles(x86)'], 'Microsoft Visual Studio 14.0')))
     vs2013_exists = 'VS120COMNTOOLS' in os.environ or os.path.isdir(os.path.join(os.environ['ProgramFiles'], 'Microsoft Visual Studio 12.0')) or ('ProgramFiles(x86)' in os.environ and os.path.isdir(os.path.join(os.environ['ProgramFiles(x86)'], 'Microsoft Visual Studio 12.0')))
-    mingw_exists = len(which('mingw32-make').strip()) > 0 and len(which('g++').strip()) > 0
-    if vs2013_exists: CMAKE_GENERATOR = 'Visual Studio 12' # Favor VS2013 over VS2015, since there is no big known difference, and VS2013 CRT is more widely available (for portable installation compatibility).
-    elif vs2015_exists: CMAKE_GENERATOR = 'Visual Studio 14'
+    mingw_exists = which('mingw32-make') != None and which('g++') != None
+    if vs2015_exists: CMAKE_GENERATOR = 'Visual Studio 14'
     elif mingw_exists: CMAKE_GENERATOR = 'MinGW Makefiles'
+    elif vs2013_exists: CMAKE_GENERATOR = 'Visual Studio 12' # VS2013 is no longer supported, so attempt it as a last resort if someone might want to insist using it.
     else: CMAKE_GENERATOR = '' # No detected generator
 if VERBOSE: print('CMAKE_GENERATOR: ' + CMAKE_GENERATOR)
 sys.argv = filter(lambda x: x not in ['--mingw', '--vs2013', '--vs2015'], sys.argv)
+
+# Computes a suitable path prefix to use when building with a given generator.
+def cmake_generator_prefix():
+  if CMAKE_GENERATOR == 'Visual Studio 14': return '_vs2015'
+  elif CMAKE_GENERATOR == 'MinGW Makefiles': return '_mingw'
+  return '' # Unix Makefiles and Visual Studio 2013 do not specify a path prefix for backwards path compatibility
 
 # Removes a directory tree even if it was readonly, and doesn't throw exception on failure.
 def remove_tree(d):
@@ -115,6 +134,34 @@ def remove_tree(d):
   except Exception as e:
     if VERBOSE: print('remove_tree threw an exception, ignoring: ' + str(e))
     pass
+
+def win_set_environment_variable_direct(key, value, system=True):
+  prev_path = os.environ['PATH']
+  try:
+    py = find_used_python()
+    if py:
+      py_path = to_native_path(py.expand_vars(py.activated_path))
+      os.environ['PATH'] = os.environ['PATH'] + ';' + py_path
+    import win32api, win32con
+    if system: # Read globally from ALL USERS section.
+      folder = win32api.RegOpenKeyEx(win32con.HKEY_LOCAL_MACHINE, 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', 0, win32con.KEY_ALL_ACCESS)
+    else: # Register locally from CURRENT USER section.
+      folder = win32api.RegOpenKeyEx(win32con.HKEY_CURRENT_USER, 'Environment', 0, win32con.KEY_ALL_ACCESS)
+    win32api.RegSetValueEx(folder, key, 0, win32con.REG_EXPAND_SZ, value)
+    if VERBOSE: print('Set key=' + key + ' with value ' + value + ' in registry.')
+  except Exception as e:
+    if e[0] == 5 or e[2] == 'Access is denied.':
+      print('Error! Failed to set the environment variable \'' + key + '\'! Setting environment variables permanently requires administrator access. Please rerun this command with administrative privileges. This can be done for example by holding down the Ctrl and Shift keys while opening a command prompt in start menu.')
+      sys.exit(1)
+    print('Failed to write environment variable ' + key + ':', file=sys.stderr)
+    print(str(e), file=sys.stderr)
+    win32api.RegCloseKey(folder)
+    os.environ['PATH'] = prev_path
+    return None
+
+  win32api.RegCloseKey(folder)
+  os.environ['PATH'] = prev_path
+  win32api.SendMessage(win32con.HWND_BROADCAST, win32con.WM_SETTINGCHANGE, 0, 'Environment')
 
 def win_get_environment_variable(key, system=True):
   prev_path = os.environ['PATH']
@@ -154,24 +201,32 @@ def win_set_environment_variable(key, value, system=True):
   if VERBOSE: print('set ' + str(key) + '=' + str(value) + ', in system=' + str(system), file=sys.stderr)
   previous_value = win_get_environment_variable(key, system)
   if previous_value == value:
+    if VERBOSE: print('  no need to set, since same value already exists.')
     return # No need to elevate UAC for nothing to set the same value, skip.
 
   if not value:
     try:
       if system:
-        value = subprocess.call(['REG', 'DELETE', 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', '/V', key, '/f'], stdout=subprocess.PIPE)
+        cmd = ['REG', 'DELETE', 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', '/V', key, '/f']
       else:
-        value = subprocess.call(['REG', 'DELETE', 'HKCU\\Environment', '/V', key, '/f'], stdout=subprocess.PIPE)
+        cmd = ['REG', 'DELETE', 'HKCU\\Environment', '/V', key, '/f']
+      if VERBOSE: print(str(cmd))
+      value = subprocess.call(cmd, stdout=subprocess.PIPE)
     except Exception as e:
       return
     return
 
   try:
     if system:
-      cmd = ['bin/elevate.exe', 'SETX', '/M']
-    else:
-      cmd = ['SETX']
-    retcode = subprocess.call(cmd + [key, value], stdout=subprocess.PIPE)
+      win_set_environment_variable_direct(key, value, system)
+      return
+    value = value.replace('%', '^%') # Escape % signs so that we don't expand references to environment variables.
+    if len(value) >= 1024:
+      print('ERROR! The new environment variable ' + key + ' is more than 1024 characters long! A value this long cannot be set via command line: please add the environment variable specified above to system environment manually via Control Panel.', file=sys.stderr)
+      sys.exit(1)
+    cmd = ['SETX', key, value] 
+    if VERBOSE: print(str(cmd))
+    retcode = subprocess.call(cmd, stdout=subprocess.PIPE)
     if retcode is not 0:
       print('ERROR! Failed to set environment variable ' + key + '=' + value + '. You may need to set it manually.', file=sys.stderr)
   except Exception as e:
@@ -189,8 +244,6 @@ def sdk_path(path):
     return path
   else:
     return to_unix_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), path))
-
-def emsdk_path(): return to_unix_path(os.path.dirname(os.path.realpath(__file__)))
 
 # Modifies the given file in-place to contain '\r\n' line endings.
 def file_to_crlf(filename):
@@ -251,7 +304,7 @@ def untargz(source_filename, dest_dir, unpack_even_if_exists=False):
     return True
   print("Unpacking '" + source_filename + "' to '" + dest_dir + "'")
   mkdir_p(dest_dir)
-  run(['tar', '-xf', sdk_path(source_filename), '--strip', '1'], cwd=dest_dir)
+  run(['tar', '-xvf', sdk_path(source_filename), '--strip', '1'], cwd=dest_dir)
   #tfile = tarfile.open(source_filename, 'r:gz')
   #tfile.extractall(dest_dir)
   return True
@@ -275,8 +328,11 @@ def unzip(source_filename, dest_dir, unpack_even_if_exists=False):
           if common_subdir == None:
             common_subdir = words[0]
           elif common_subdir != words[0]:
-            common_subdir = ''
+            common_subdir = None
             break
+        else:
+          common_subdir = None
+          break
 
       unzip_to_dir = dest_dir
       if common_subdir:
@@ -327,7 +383,7 @@ def path_points_to_directory(path):
   if no_suffix:
     return True
   suffix = path[last_dot:]
-  if suffix == '.exe' or suffix == '.zip': # Very simple logic for the only file suffixes used by emsdk downloader. Other suffixes, like 'clang-3.2' are treated as dirs.
+  if suffix == '.exe' or suffix == '.zip' or suffix == '.txt': # Very simple logic for the only file suffixes used by emsdk downloader. Other suffixes, like 'clang-3.2' are treated as dirs.
     return False
   else:
     return True
@@ -489,29 +545,60 @@ def fastcomp_build_dir(tool):
     build_dir = 'build_' + tool.version + generator_suffix + bitness_suffix
   return build_dir
 
-# The directory where the binaries are produced.
+def exe_suffix(filename):
+  if WINDOWS and not filename.endswith('.exe'): return filename + '.exe'
+  else: return filename
+
+# The directory where the binaries are produced. (relative to the installation root directory of the tool)
 def fastcomp_build_bin_dir(tool):
   build_dir = fastcomp_build_dir(tool)
   if WINDOWS and 'Visual Studio' in CMAKE_GENERATOR:
-    old_llvm_bin_dir = os.path.join(build_dir, 'bin\\' + decide_cmake_build_type(tool))
-    new_llvm_bin_dir = os.path.join(build_dir, decide_cmake_build_type(tool) + '\\bin')
-    if os.path.exists(os.path.join(tool.installation_path(), new_llvm_bin_dir)):
-      return new_llvm_bin_dir
-    if os.path.exists(os.path.join(tool.installation_path(), old_llvm_bin_dir)): return old_llvm_bin_dir
-    return new_llvm_bin_dir
+    old_llvm_bin_dir = os.path.join(build_dir, 'bin', decide_cmake_build_type(tool))
+
+    new_llvm_bin_dir = None
+    default_cmake_build_type = decide_cmake_build_type(tool)
+    cmake_build_types = [default_cmake_build_type, 'Release', 'RelWithDebInfo', 'MinSizeRel', 'Debug']
+    for build_type in cmake_build_types:
+      d = os.path.join(build_dir, build_type, 'bin')
+      if os.path.isfile(os.path.join(tool.installation_path(), d, exe_suffix('clang'))):
+        new_llvm_bin_dir = d
+        break
+
+    if new_llvm_bin_dir and os.path.exists(os.path.join(tool.installation_path(), new_llvm_bin_dir)): return new_llvm_bin_dir
+    elif os.path.exists(os.path.join(tool.installation_path(), old_llvm_bin_dir)): return old_llvm_bin_dir
+    return os.path.join(build_dir, default_cmake_build_type, 'bin')
   else:
     return os.path.join(build_dir, 'bin')
 
-make_env = os.environ.copy()
+def build_env(generator):
+  build_env = os.environ.copy()
 
-cxxflags = ''
-if hasattr(make_env, 'CXXFLAGS'): cxxflags = make_env['CXXFLAGS'] + ' '
+  # To work around a build issue with older Mac OS X builds, add -stdlib=libc++ to all builds.
+  # See https://groups.google.com/forum/#!topic/emscripten-discuss/5Or6QIzkqf0
+  if OSX: build_env['CXXFLAGS'] = ((build_env['CXXFLAGS'] + ' ') if hasattr(build_env, 'CXXFLAGS') else '') + '-stdlib=libc++'
 
-# To work around a build issue with older Mac OS X builds, add -stdlib=libc++ to all builds.
-# See https://groups.google.com/forum/#!topic/emscripten-discuss/5Or6QIzkqf0
-if OSX: cxxflags += '-stdlib=libc++'
+  if 'Visual Studio 14' in generator or 'Visual Studio 2015' in generator:
+    build_env['VCTargetsPath'] = os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/Microsoft.Cpp/v4.0/V140')
 
-make_env['CXXFLAGS'] = cxxflags
+    # CMake and VS2015 cl.exe needs to have mspdb140.dll et al. in its PATH.
+    vc_bin_paths = [os.path.join(os.environ['ProgramFiles'], 'Microsoft Visual Studio 14.0\\VC\\bin'),
+                    os.path.join(os.environ['ProgramFiles(x86)'], 'Microsoft Visual Studio 14.0\\VC\\bin')]
+    for path in vc_bin_paths:
+      if os.path.isdir(path):
+        build_env['PATH'] = build_env['PATH'] + ';' + path
+
+  elif 'Visual Studio 12' in generator or 'Visual Studio 2013' in generator:
+    build_env['VCTargetsPath'] = os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/Microsoft.Cpp/v4.0/V120')
+
+  return build_env
+
+def get_generator_for_sln_file(sln_file):
+  contents = open(sln_file, 'r').read()
+  if '# Visual Studio Express 2015' in contents or '# Visual Studio 2015' in contents or '# Visual Studio 14' in contents:
+    return 'Visual Studio 14'
+  if '# Visual Studio Express 2013' in contents or '# Visual Studio 2013' in contents or '# Visual Studio 12' in contents:
+    return 'Visual Studio 12'
+  raise Exception('Unknown generator used to build solution file ' + sln_file)
 
 def find_msbuild(sln_file):
   search_paths_vs2015 = [os.path.join(os.environ['ProgramFiles'], 'MSBuild/14.0/Bin/amd64'),
@@ -523,15 +610,14 @@ def find_msbuild(sln_file):
                         os.path.join(os.environ['ProgramFiles'], 'MSBuild/12.0/Bin'),
                         os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/12.0/Bin')]
   search_paths_old = [os.path.join(os.environ["WINDIR"], 'Microsoft.NET/Framework/v4.0.30319')]
-  contents = open(sln_file, 'r').read()
-  if '# Visual Studio Express 2015' in contents or '# Visual Studio 2015' in contents or '# Visual Studio 14' in contents:
+  generator = get_generator_for_sln_file(sln_file)
+  if generator == 'Visual Studio 14':
     search_paths = search_paths_vs2015
-    make_env['VCTargetsPath'] = os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/Microsoft.Cpp/v4.0/V140')
-  if '# Visual Studio Express 2013' in contents or '# Visual Studio 2013' in contents or '# Visual Studio 12' in contents:
+  elif generator == 'Visual Studio 12':
     search_paths = search_paths_vs2013 + search_paths_old
-    make_env['VCTargetsPath'] = os.path.join(os.environ['ProgramFiles(x86)'], 'MSBuild/Microsoft.Cpp/v4.0/V120')
   else:
-    search_paths = search_paths_old + search_paths_vs2013
+    raise Exception('Unknown generator!')
+
   for path in search_paths:
     p = os.path.join(path, 'MSBuild.exe')
     if os.path.isfile(p): return p
@@ -543,9 +629,13 @@ def make_build(build_root, build_type, build_target_platform='x64'):
     print('Performing a parallel build with ' + str(CPU_CORES) + ' cores.')
   else:
     print('Performing a singlethreaded build.')
+
+  generator_to_use = CMAKE_GENERATOR
+
   if WINDOWS:
     if 'Visual Studio' in CMAKE_GENERATOR:
       solution_name = subprocess.check_output(['dir', '/b', '*.sln'], shell=True, cwd=build_root).strip()
+      generator_to_use = get_generator_for_sln_file(os.path.join(build_root, solution_name))
 # Disabled for now: Don't pass /maxcpucount argument to msbuild, since it looks like when building, msbuild already automatically spawns the full amount of logical
 # cores the system has, and passing the number of logical cores here has been observed to give a quadratic N*N explosion on the number of spawned processes
 # (e.g. on a Core i7 5960X with 16 logical cores, it would spawn 16*16=256 cl.exe processes, which would start crashing when running out of system memory)
@@ -559,7 +649,7 @@ def make_build(build_root, build_type, build_target_platform='x64'):
   # Build
   try:
     print('Running build: ' + str(make))
-    ret = subprocess.check_call(make, cwd=build_root, env=make_env)
+    ret = subprocess.check_call(make, cwd=build_root, env=build_env(generator_to_use))
     if ret != 0:
       print('Build failed with exit code ' + ret + '!', file=sys.stderr)
       print('Working directory: ' + build_root, file=sys.stderr)
@@ -581,7 +671,13 @@ def cmake_configure(generator, build_root, src_root, build_type, extra_cmake_arg
     else: generator = []
     cmdline = ['cmake'] + generator +  ['-DCMAKE_BUILD_TYPE='+build_type, '-DPYTHON_EXECUTABLE='+sys.executable] + extra_cmake_args + [src_root]
     print('Running CMake: ' + str(cmdline))
-    ret = subprocess.check_call(cmdline, cwd=build_root)
+    def quote_parens(x):
+      if ' ' in x:
+        return '"' + x.replace('"', '\\"') + '"'
+      else:
+        return x
+    open(os.path.join(build_root, 'recmake.' + ('bat' if WINDOWS else 'sh')), 'w').write(' '.join(map(quote_parens, cmdline))) # Create a file 'recmake.bat/sh' in the build root that user can call to manually recmake the build tree with the previous build params
+    ret = subprocess.check_call(cmdline, cwd=build_root, env=build_env(CMAKE_GENERATOR))
     if ret != 0:
       print('CMake invocation failed with exit code ' + ret + '!', file=sys.stderr)
       print('Working directory: ' + build_root, file=sys.stderr)
@@ -632,9 +728,12 @@ def build_fastcomp_tool(tool):
   build_type = decide_cmake_build_type(tool)
 
   # Configure
-  global BUILD_LLVM_TESTS
-  tests_arg = 'ON' if BUILD_LLVM_TESTS else 'OFF'
-  args = ['-DLLVM_TARGETS_TO_BUILD=X86;JSBackend', '-DLLVM_INCLUDE_EXAMPLES=OFF', '-DCLANG_INCLUDE_EXAMPLES=OFF', '-DLLVM_INCLUDE_TESTS=' + tests_arg, '-DCLANG_INCLUDE_TESTS=' + tests_arg]
+  global BUILD_FOR_TESTING, ENABLE_LLVM_ASSERTIONS
+  tests_arg = 'ON' if BUILD_FOR_TESTING else 'OFF'
+
+  enable_assertions = ENABLE_LLVM_ASSERTIONS.lower() == 'on' or (ENABLE_LLVM_ASSERTIONS == 'auto' and build_type.lower() != 'release' and build_type.lower() != 'minsizerel')
+
+  args = ['-DLLVM_TARGETS_TO_BUILD=X86;JSBackend', '-DLLVM_INCLUDE_EXAMPLES=OFF', '-DCLANG_INCLUDE_EXAMPLES=OFF', '-DLLVM_INCLUDE_TESTS=' + tests_arg, '-DCLANG_INCLUDE_TESTS=' + tests_arg, '-DLLVM_ENABLE_ASSERTIONS=' + ('ON' if enable_assertions else 'OFF')]
   success = cmake_configure(cmake_generator, build_root, fastcomp_src_root, build_type, args)
   if not success: return False
 
@@ -642,12 +741,11 @@ def build_fastcomp_tool(tool):
   success = make_build(build_root, build_type, 'x64' if tool.bitness == 64 else 'Win32')
   return success
 
+# Emscripten asm.js optimizer build scripts:
 def optimizer_build_root(tool):
   build_root = tool.installation_path().strip()
   if build_root.endswith('/') or build_root.endswith('\\'): build_root = build_root[:-1]
-  generator_prefix = '' # Unix Makefiles and Visual Studio 2013 do not specify a path prefix for backwards path compatibility
-  if CMAKE_GENERATOR == 'Visual Studio 14': generator_prefix = '_vs2015'
-  elif CMAKE_GENERATOR == 'MinGW Makefiles': generator_prefix = '_mingw'
+  generator_prefix = cmake_generator_prefix()
   build_root = build_root + generator_prefix + '_' + str(tool.bitness) + 'bit_optimizer'
   return build_root
 
@@ -655,8 +753,11 @@ def uninstall_optimizer(tool):
   if VERBOSE: print('uninstall_optimizer(' + str(tool) + ')')
   build_root = optimizer_build_root(tool)
   print("Deleting path '" + build_root + "'")
-  remove_tree(build_root)
-  os.remove(build_root)
+  try:
+    remove_tree(build_root)
+    os.remove(build_root)
+  except:
+    pass
 
 def is_optimizer_installed(tool):
   build_root = optimizer_build_root(tool)
@@ -679,6 +780,60 @@ def build_optimizer_tool(tool):
   success = make_build(build_root, build_type, 'x64' if tool.bitness == 64 else 'Win32')
   return success
 
+
+# Binaryen build scripts:
+def binaryen_build_root(tool):
+  build_root = tool.installation_path().strip()
+  if build_root.endswith('/') or build_root.endswith('\\'): build_root = build_root[:-1]
+  generator_prefix = cmake_generator_prefix()
+  build_root = build_root + generator_prefix + '_' + str(tool.bitness) + 'bit_binaryen'
+  return build_root
+
+def uninstall_binaryen(tool):
+  if VERBOSE: print('uninstall_binaryen(' + str(tool) + ')')
+  build_root = binaryen_build_root(tool)
+  print("Deleting path '" + build_root + "'")
+  try:
+    remove_tree(build_root)
+    os.remove(build_root)
+  except:
+    pass
+
+def is_binaryen_installed(tool):
+  build_root = binaryen_build_root(tool)
+  return os.path.exists(build_root)
+
+def build_binaryen_tool(tool):
+  if VERBOSE: print('build_binaryen_tool(' + str(tool) + ')')
+  src_root = tool.installation_path()
+  build_root = binaryen_build_root(tool)
+  build_type = decide_cmake_build_type(tool)
+
+  # Configure
+  args = []
+
+  cmake_generator = CMAKE_GENERATOR
+  if 'Visual Studio' in CMAKE_GENERATOR:
+    if tool.bitness == 64: cmake_generator += ' Win64'
+    if BUILD_FOR_TESTING: args += ['-DRUN_STATIC_ANALYZER=1']
+
+  success = cmake_configure(cmake_generator, build_root, src_root, build_type, args)
+  if not success: return False
+
+  # Make
+  success = make_build(build_root, build_type, 'x64' if tool.bitness == 64 else 'Win32')
+
+  # Deploy scripts needed from source repository to build directory
+  remove_tree(os.path.join(build_root, 'scripts'))
+  shutil.copytree(os.path.join(src_root, 'scripts'), os.path.join(build_root, 'scripts'))
+  remove_tree(os.path.join(build_root, 'src', 'js'))
+  shutil.copytree(os.path.join(src_root, 'src', 'js'), os.path.join(build_root, 'src', 'js'))
+  shutil.copyfile(os.path.join(src_root, 'bin', 'binaryen.js'), os.path.join(build_root, 'bin', 'binaryen.js'))
+  shutil.copyfile(os.path.join(src_root, 'bin', 'wasm.js'), os.path.join(build_root, 'bin', 'wasm.js'))
+
+  return success
+
+
 def download_and_unzip(zipfile, dest_dir, download_even_if_exists=False, filename_prefix = ''):
   if VERBOSE: print('download_and_unzip(zipfile=' + zipfile + ', dest_dir=' + dest_dir + ')')
   if not download_even_if_exists and num_files_in_directory(dest_dir) > 0:
@@ -691,9 +846,6 @@ def download_and_unzip(zipfile, dest_dir, download_even_if_exists=False, filenam
     return unzip(dst_file, dest_dir, unpack_even_if_exists=download_even_if_exists)
   else:
     return untargz(dst_file, dest_dir, unpack_even_if_exists=download_even_if_exists)
-
-def to_unix_path(p):
-  return p.replace('\\', '/')
 
 def to_native_path(p):
   if WINDOWS:
@@ -856,6 +1008,8 @@ class Tool:
       str = str.replace('%cmake_build_type_on_win%', (decide_cmake_build_type(self) + '/') if WINDOWS else '')
     if '%installation_dir%' in str:
       str = str.replace('%installation_dir%', sdk_path(self.installation_dir()))
+    if '%generator_prefix%' in str:
+      str = str.replace('%generator_prefix%', cmake_generator_prefix())
     str = str.replace('%.exe%', '.exe' if WINDOWS else '')
     if '%fastcomp_build_dir%' in str:
       str = str.replace('%fastcomp_build_dir%', fastcomp_build_dir(self))
@@ -870,6 +1024,9 @@ class Tool:
     if hasattr(self, 'uses'):
       for tool_name in self.uses:
         tool = find_tool(tool_name)
+        if not tool:
+          if VERBOSE: print('Tool ' + str(self) + ' depends on ' + tool_name + ' which does not exist!')
+          continue
         if tool.needs_compilation(): return True
 
     return False
@@ -912,7 +1069,7 @@ class Tool:
     if hasattr(self, 'os'):
       if self.os == 'all':
         return True
-      if (WINDOWS and 'win' in self.os) or (LINUX and 'linux' in self.os) or (OSX and 'osx' in self.os):
+      if (WINDOWS and 'win' in self.os) or (LINUX and ('linux' in self.os or 'unix' in self.os)) or (OSX and ('osx' in self.os or 'unix' in self.os)):
         return True
       else:
         return False
@@ -959,8 +1116,10 @@ class Tool:
       
       if self.id == 'vs-tool': # vs-tool is a special tool since all versions must be installed to the same dir, so dir name will not differentiate the version.
         return content_exists and get_installed_vstool_version(self.installation_path()) == self.version
-      elif hasattr(self, 'custom_is_installed_script') and self.custom_is_installed_script == 'is_optimizer_installed':
-        return is_optimizer_installed(self)
+      elif hasattr(self, 'custom_is_installed_script'):
+        if self.custom_is_installed_script == 'is_optimizer_installed': return is_optimizer_installed(self)
+        elif self.custom_is_installed_script == 'is_binaryen_installed': return is_binaryen_installed(self)
+        else: raise Exception('Unknown custom_is_installed_script directive "' + self.custom_is_installed_script + '"!')
       else:
         return content_exists
     else:
@@ -987,10 +1146,11 @@ class Tool:
     for cfg in activated_cfg:
       cfg = cfg.strip()
       (key, value) = parse_key_value(cfg)
-#      print('activated cfg ' + key + ', value: ' + value)
-#      if dot_emscripten.has_key(key):
-#        print('dot_emscripten ' + dot_emscripten[key])
-      if key in dot_emscripten and dot_emscripten[key] != value:
+      if not key in dot_emscripten: return False
+
+      # If running in embedded mode, all paths are stored dynamically relative to the emsdk root, so normalize those first.
+      dot_emscripten_key = dot_emscripten[key].replace("' + emsdk_path + '", emsdk_path())
+      if dot_emscripten_key != value:
         return False
     return True
 
@@ -1066,25 +1226,25 @@ class Tool:
     else:
       print("Installing tool '" + str(self) + "'..")
       url = self.download_url()
+
       if hasattr(self, 'custom_install_script') and self.custom_install_script == 'build_fastcomp':
         success = build_fastcomp_tool(self)
       elif hasattr(self, 'git_branch'):
         success = git_clone_checkout_and_pull(url, self.installation_path(), self.git_branch)
-        if success:
-          if hasattr(self, 'custom_install_script') and self.custom_install_script == 'build_optimizer':
-            success = build_optimizer_tool(self)
       elif url.endswith('zip') or url.endswith('.tar') or url.endswith('.gz'):
         download_even_if_exists = (self.id == 'vs-tool')
         success = download_and_unzip(url, self.installation_path(), download_even_if_exists, filename_prefix=self.zipfile_prefix if hasattr(self, 'zipfile_prefix') else '')
-        if success:
-          if hasattr(self, 'custom_install_script') and self.custom_install_script == 'build_optimizer':
-            success = build_optimizer_tool(self)
       else:
         dst_file = download_file(urljoin(emsdk_packages_url, self.download_url()), self.installation_path())
-        if dst_file:
-          success = True
-        else:
-          success = False
+        if dst_file: success = True
+        else: success = False
+
+      if success and hasattr(self, 'custom_install_script'):
+        if self.custom_install_script == 'build_optimizer': success = build_optimizer_tool(self)
+        elif self.custom_install_script == 'build_fastcomp': pass # 'build_fastcomp' is a special one that does the download on its own, others do the download manually.
+        elif self.custom_install_script == 'build_binaryen': success = build_binaryen_tool(self)
+        else: raise Exception('Unknown custom_install_script command "' + self.custom_install_script + '"!')
+
       if not success:
         print("Installation failed!")
         return False
@@ -1109,11 +1269,10 @@ class Tool:
       print("Tool '" + str(self) + "' was not installed. No need to uninstall.")
       return
     print("Uninstalling tool '" + str(self) + "'..")
-    if hasattr(self, 'custom_uninstall_script') and self.custom_uninstall_script == 'uninstall_optimizer':
-      try:
-        uninstall_optimizer(self)
-      except:
-        pass
+    if hasattr(self, 'custom_uninstall_script'):
+      if self.custom_uninstall_script == 'uninstall_optimizer': uninstall_optimizer(self)
+      elif self.custom_uninstall_script == 'uninstall_binaryen': uninstall_binaryen(self)
+      else: raise Exception('Unknown custom_uninstall_script directive "' + custom_uninstall_script + '"!')
     try:
       print("Deleting path '" + self.installation_path() + "'")
       remove_tree(self.installation_path())
@@ -1170,13 +1329,15 @@ def is_os_64bit(): # http://stackoverflow.com/questions/2208828/detect-64bit-os-
 def find_latest_32bit_sdk():
   for sdk in reversed(sdks): # Newest SDK is always at the end of the list.
     if not hasattr(sdk, 'bitness') or sdk.bitness == 32: # If no 'bitness' field, it means the SDK is universal.
-      return sdk
+      if not 'nightly' in sdk.version:
+        return sdk
   return None
 
 def find_latest_64bit_sdk():
   for sdk in reversed(sdks): # Newest SDK is always at the end of the list.
     if not hasattr(sdk, 'bitness') or sdk.bitness == 64: # If no 'bitness' field, it means the SDK is universal.
-      return sdk
+      if not 'nightly' in sdk.version:
+        return sdk
   return None
 
 def find_latest_sdk():
@@ -1184,6 +1345,26 @@ def find_latest_sdk():
     return find_latest_64bit_sdk()
   else:
     return find_latest_32bit_sdk()
+
+def find_latest_nightly_32bit_sdk():
+  for sdk in reversed(sdks): # Newest SDK is always at the end of the list.
+    if not hasattr(sdk, 'bitness') or sdk.bitness == 32: # If no 'bitness' field, it means the SDK is universal.
+      if 'nightly' in sdk.version:
+        return sdk
+  return None
+
+def find_latest_nightly_64bit_sdk():
+  for sdk in reversed(sdks): # Newest SDK is always at the end of the list.
+    if not hasattr(sdk, 'bitness') or sdk.bitness == 64: # If no 'bitness' field, it means the SDK is universal.
+      if 'nightly' in sdk.version:
+        return sdk
+  return None
+
+def find_latest_nightly_sdk():
+  if is_os_64bit():
+    return find_latest_nightly_64bit_sdk()
+  else:
+    return find_latest_nightly_32bit_sdk()
 
 # Finds the best-matching python tool for use.
 def find_used_python():
@@ -1249,6 +1430,38 @@ def fetch_emscripten_tags():
   else:
     print('Done. No tagged releases available.')
 
+  print('Fetching all tags from Binaryen Github repository...')
+  tags = run_get_output([GIT(), 'ls-remote', '--tags', binaryen_git_repo])
+  if tags[0] != 0: return False # failed to get tags?
+  tags = tags[1]
+  binaryen_tags = []
+  for t in tags.split('\n'):
+    try:
+      t = t[t.index('refs/tags/') + len('refs/tags/'):].strip()
+      if '.' in t:
+        binaryen_tags += [t]
+    except:
+      pass
+  binaryen_tags = sorted(binaryen_tags, cmp=version_compare)
+  open(sdk_path('binaryen-tags.txt'), 'w').write('\n'.join(binaryen_tags))
+  if len(binaryen_tags) > 0:
+    print('Done. ' + str(len(binaryen_tags)) + ' tagged Binaryen releases available, latest is ' + binaryen_tags[-1] + '.')
+  else:
+    print('Done. No tagged Binaryen releases available.')
+
+  def os_name_for_llvm_location():
+    if WINDOWS: return 'win'
+    if LINUX: return 'linux'
+    if OSX: return 'osx'
+  def os_name_for_emscripten_location():
+    if WINDOWS: return 'win'
+    else: return 'linux'
+
+  print('Fetching all precompiled Nightly versions..')
+  download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/llvm/nightly/' + os_name_for_llvm_location() + '_32bit/index.txt', 'llvm-nightlies-32bit.txt', download_even_if_exists=True)
+  download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/llvm/nightly/' + os_name_for_llvm_location() + '_64bit/index.txt', 'llvm-nightlies-64bit.txt', download_even_if_exists=True)
+  download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/emscripten/nightly/' + os_name_for_emscripten_location() + '/index.txt', 'emscripten-nightlies.txt', download_even_if_exists=True)
+
 def update_emsdk():
   if WINDOWS:
     download_and_unzip(urljoin(emsdk_packages_url, 'emsdk_windows_update.zip'), emsdk_path(), download_even_if_exists=True)
@@ -1266,8 +1479,41 @@ def load_emscripten_tags():
   except:
     return []
 
+def load_binaryen_tags():
+  try:
+    return open(sdk_path('binaryen-tags.txt'), 'r').read().split('\n')
+  except:
+    return []
+
+def remove_prefix(s, prefix):
+  if s.startswith(prefix): return s[len(prefix):]
+  else: return s
+
+def remove_suffix(s, suffix):
+  if s.endswith(suffix): return s[:len(s)-len(suffix)]
+  else: return s
+
+# Kind should be one of: 'llvm-nightlies-32bit.txt', 'llvm-nightlies-64bit.txt', 'emscripten-nightlies.txt'
+def load_nightlies_list(kind):
+  try:
+    items = open(sdk_path(kind), 'r').read().split('\n')
+    items = map(lambda x: remove_suffix(remove_suffix(remove_prefix(remove_prefix(x, 'emscripten-llvm-e'), 'emscripten-nightly-'), '.tar.gz'), '.zip').strip(), items)
+    items = filter(lambda x: 'latest' not in x and len(x) > 0, items)
+    return items
+  except:
+    return []
+
+def load_llvm_32bit_nightlies():
+  return load_nightlies_list('llvm-nightlies-32bit.txt')
+
+def load_llvm_64bit_nightlies():
+  return load_nightlies_list('llvm-nightlies-64bit.txt')
+
+def load_emscripten_nightlies():
+  return load_nightlies_list('emscripten-nightlies.txt')
+
 def load_sdk_manifest():
-  global tools
+  global tools, sdks
   try:
     manifest = json.loads(open(sdk_path("emsdk_manifest.json"), "r").read())
   except Exception as e:
@@ -1276,6 +1522,35 @@ def load_sdk_manifest():
     return
 
   emscripten_tags = load_emscripten_tags()
+  binaryen_tags = load_binaryen_tags()
+  llvm_32bit_nightlies = list(reversed(load_llvm_32bit_nightlies()))
+  llvm_64bit_nightlies = list(reversed(load_llvm_64bit_nightlies()))
+  emscripten_nightlies = list(reversed(load_emscripten_nightlies()))
+
+  def dependencies_exist(sdk):
+    for tool_name in sdk.uses:
+      tool = find_tool(tool_name)
+      if not tool: return False
+    return True
+
+  # A 'category parameter' is a %foo%-encoded identifier that specifies
+  # a class of tools instead of just one tool, e.g. %tag% or %nightly..%
+  def expand_category_param(param, category_list, t, is_sdk):
+    global tools, sdks
+    for i in range(len(category_list)):
+      ver = category_list[i]
+      t2 = copy.copy(t)
+      for p, v in vars(t2).iteritems():
+        if isinstance(v, basestring) and param in v:
+          t2.__dict__[p] = v.replace(param, ver)
+      t2.is_old = i < len(category_list) - 2
+      if hasattr(t2, 'uses'):
+        t2.uses = map((lambda x: x.replace(param, ver)), t2.uses)
+      if is_sdk:
+        if dependencies_exist(t2):
+          sdks.append(t2)
+      else:
+        tools.append(t2)
 
   for tool in manifest['tools']:
     t = Tool(tool)
@@ -1283,16 +1558,17 @@ def load_sdk_manifest():
       if not hasattr(t, 'is_old'):
         t.is_old = False
 
+      # Expand the metapackages that refer to tags or nightlies.
       if '%tag%' in t.version:
-        # Expand the metapackage that refers to all tags.
-        for i in range(len(emscripten_tags)):
-          tag = emscripten_tags[i]
-          t2 = copy.copy(t)
-          for p, v in vars(t2).iteritems():
-            if isinstance(v, basestring) and '%tag%' in v:
-              t2.__dict__[p] = v.replace('%tag%', tag)
-          t2.is_old = i < len(emscripten_tags) - 2
-          tools.append(t2)
+        expand_category_param('%tag%', emscripten_tags, t, is_sdk=False)
+      elif '%binaryen_tag%' in t.version:
+        expand_category_param('%binaryen_tag%', binaryen_tags, t, is_sdk=False)
+      elif '%nightly-llvm-64bit%' in t.version:
+        expand_category_param('%nightly-llvm-64bit%', llvm_64bit_nightlies, t, is_sdk=False)
+      elif '%nightly-llvm-32bit%' in t.version:
+        expand_category_param('%nightly-llvm-32bit%', llvm_32bit_nightlies, t, is_sdk=False)
+      elif '%nightly-emscripten%' in t.version:
+        expand_category_param('%nightly-emscripten%', emscripten_nightlies, t, is_sdk=False)
       else:
         tools.append(t)
 
@@ -1304,16 +1580,13 @@ def load_sdk_manifest():
         sdk.is_old = False
 
       if '%tag%' in sdk.version:
-        # Expand the metapackage that refers to all tags.
-        for i in range(len(emscripten_tags)):
-          tag = emscripten_tags[i]
-          sdk2 = copy.copy(sdk)
-          for p, v in vars(sdk2).iteritems():
-            if isinstance(v, basestring) and '%tag%' in v:
-              sdk2.__dict__[p] = v.replace('%tag%', tag)
-          sdk2.is_old = i < len(emscripten_tags) - 2
-          sdk2.uses = map((lambda x: x.replace('%tag%', tag)), sdk2.uses)
-          sdks.append(sdk2)
+        expand_category_param('%tag%', emscripten_tags, sdk, is_sdk=True)
+      elif '%nightly-llvm-64bit%' in sdk.version:
+        expand_category_param('%nightly-llvm-64bit%', llvm_64bit_nightlies, sdk, is_sdk=True)
+      elif '%nightly-llvm-32bit%' in sdk.version:
+        expand_category_param('%nightly-llvm-32bit%', llvm_32bit_nightlies, sdk, is_sdk=True)
+      elif '%nightly-emscripten%' in sdk.version:
+        expand_category_param('%nightly-emscripten%', emscripten_nightlies, sdk, is_sdk=True)
       else:
         sdks.append(sdk)
 
@@ -1381,12 +1654,9 @@ def set_active_tools(tools_to_activate, permanently_activate):
       tool.win_activate_env_vars(permanently_activate=True)
 
     # PATH variable
-    newpath, added_items = adjusted_path(tools_to_activate)
+    newpath, added_items = adjusted_path(tools_to_activate, system_path_only=True)
     if newpath != os.environ['PATH']: # Are there any actual changes?
-      if len(newpath) < 1024:
-        win_set_environment_variable('PATH', newpath, system=True)
-      else:
-        print('ERROR! The new PATH is more than 1024 characters long! A PATH this long cannot be set via command line: please add the PATHs specified above to system PATH manually via Control Panel.', file=sys.stderr)
+      win_set_environment_variable('PATH', newpath, system=True)
 
   return tools_to_activate
 
@@ -1419,11 +1689,29 @@ def normalized_contains(lst, elem):
 
 # Looks at the current PATH and adds and removes entries so that the PATH reflects
 # the set of given active tools.
-def adjusted_path(tools_to_activate, log_additions=False):
+def adjusted_path(tools_to_activate, log_additions=False, system_path_only=False):
   # These directories should be added to PATH
   path_add = get_required_path(tools_to_activate)
   # These already exist.
-  existing_path = os.environ['PATH'].split(ENVPATH_SEPARATOR)
+  if WINDOWS:
+    existing_path = win_get_environment_variable('PATH', system=True)
+    if not system_path_only:
+      current_user_path = win_get_environment_variable('PATH', system=False)
+      if current_user_path: existing_path += ENVPATH_SEPARATOR + current_user_path
+    existing_path = existing_path.split(ENVPATH_SEPARATOR)
+
+    # Fix up after potential changes made by bug https://github.com/kripken/emscripten/issues/4121
+    system_root = os.environ['SystemRoot'].lower()
+    for i in range(len(existing_path)):
+      p = existing_path[i]
+      if p.lower() == system_root: p = '%SystemRoot%'
+      elif (system_root + '\\system32') in p.lower(): p = '%SystemRoot%\\system32'
+      elif (system_root + '\\system32\\wbem') in p.lower(): p = '%SystemRoot%\\System32\\Wbem'
+      elif (system_root + '\\system32\\windowspowershell\v1.0') in p.lower(): p = '%SystemRoot%\\System32\\WindowsPowerShell\v1.0\\'
+      existing_path[i] = p
+
+  else:
+    existing_path = os.environ['PATH'].split(ENVPATH_SEPARATOR)
   emsdk_root_path = to_unix_path(emsdk_path())
 
   existing_emsdk_tools = [item for item in existing_path if to_unix_path(item).startswith(emsdk_root_path)]
@@ -1454,6 +1742,10 @@ def construct_env(tools_to_activate, permanent):
       print('')
 
   env_vars_to_add = []
+
+  # A core variable EMSDK points to the root of Emscripten SDK directory.
+  env_vars_to_add += [('EMSDK', to_unix_path(emsdk_path()))]
+
   em_config_path = os.path.normpath(os.path.join(emscripten_config_directory, '.emscripten'))
   if not 'EM_CONFIG' in os.environ or to_unix_path(os.environ['EM_CONFIG']) != to_unix_path(em_config_path):
     env_vars_to_add += [('EM_CONFIG', em_config_path)]
@@ -1491,7 +1783,7 @@ def silentremove(filename):
     if e.errno != errno.ENOENT: raise
 
 def main():
-  global emscripten_config_directory
+  global emscripten_config_directory, BUILD_FOR_TESTING, ENABLE_LLVM_ASSERTIONS
   load_dot_emscripten()
   load_sdk_manifest()
 
@@ -1507,8 +1799,11 @@ def main():
                                   parameter, also historical versions are
                                   shown.
 
-   emsdk update                 - Fetches a list of updates from the net (but
-                                  does not install them)
+   emsdk update                 - Updates emsdk to the newest version, and also
+                                  runs 'update-tags' (below).
+
+   emsdk update-tags            - Fetches the most up to date list of available
+                                  Emscripten tagged and nightly releases.
 
    emsdk install [options] <tool 1> <tool 2> <tool 3> ...
                                 - Downloads and installs given tools or SDKs.
@@ -1539,6 +1834,12 @@ def main():
                                   included. Pass this to enable running test
                                   other.test_llvm_lit in the Emscripten test
                                   suite. Default: disabled.
+             --enable-assertions: If specified, LLVM is built with assert()
+                                  checks enabled. Useful for development
+                                  purposes. Default: Enabled for 'incoming'
+                                  branch, disabled for 'master' branch.
+            --disable-assertions: Forces assertions off during the build.
+
                --vs2013/--vs2015: If building from source, overrides to build
                                   using the specified compiler. When installing
                                   precompiled packages, this has no effect.
@@ -1615,12 +1916,18 @@ def main():
   # Replace meta-packages with the real package names.
   if (cmd == 'update' or cmd == 'install' or cmd == 'activate'):
     for i in range(2, len(sys.argv)):
-      if sys.argv[i] == 'latest':
+      if sys.argv[i] == 'latest' or sys.argv[i] == 'sdk-latest':
         sys.argv[i] = str(find_latest_sdk())
-      elif sys.argv[i] == 'latest-32bit':
+      elif sys.argv[i] == 'latest-32bit' or sys.argv[i] == 'sdk-latest-32bit':
         sys.argv[i] = str(find_latest_32bit_sdk())
-      elif sys.argv[i] == 'latest-64bit':
+      elif sys.argv[i] == 'latest-64bit' or sys.argv[i] == 'sdk-latest-64bit':
         sys.argv[i] = str(find_latest_64bit_sdk())
+      elif sys.argv[i] == 'sdk-nightly-latest':
+        sys.argv[i] = str(find_latest_nightly_sdk())
+      elif sys.argv[i] == 'sdk-nightly-latest-32bit':
+        sys.argv[i] = str(find_latest_nightly_32bit_sdk())
+      elif sys.argv[i] == 'sdk-nightly-latest-64bit':
+        sys.argv[i] = str(find_latest_nightly_64bit_sdk())
 
   if cmd == 'list':
     print('')
@@ -1679,7 +1986,7 @@ def main():
           active = '*' if sdk.is_active() else ' '
           print('    ' + active + '    {0: <25}'.format(str(sdk)) + installed)
         print('')
-      print('The following precompiled SDKs are available for download:')
+      print('The following precompiled SDKs are available for download: (Run "./emsdk update" to pull in the latest list)')
       print_sdks(find_sdks(False))
       print('The following SDKs can be compiled from source:')
       print_sdks(find_sdks(True))
@@ -1694,10 +2001,6 @@ def main():
 
     return 0
   elif cmd == 'construct_env':
-    # If .emscripten exists, we are configuring as embedded inside the emsdk directory.
-    if os.path.exists(os.path.join(emsdk_path(), '.emscripten')):
-      emscripten_config_directory = emsdk_path()
-
     silentremove(EMSDK_SET_ENV) # Clean up old temp file up front, in case of failure later before we get to write out the new one.
     tools_to_activate = currently_active_tools()
     tools_to_activate = process_tool_list(tools_to_activate, log_errors=True)
@@ -1708,6 +2011,9 @@ def main():
   elif cmd == 'update':
     update_emsdk()
     silentremove(sdk_path(EMSDK_SET_ENV)) # Clean up litter after old emsdk update which may have left this temp file around.
+    return 0
+  elif cmd == 'update-tags':
+    fetch_emscripten_tags()
     return 0
   elif cmd == 'activate':
     permanently_activate = '--global' in sys.argv
@@ -1744,7 +2050,7 @@ def main():
         tools_to_activate += [tool]
     tools_to_activate = set_active_tools(tools_to_activate, permanently_activate=permanently_activate)
     if WINDOWS and not permanently_activate:
-      print('To permanently register this environment globally to all users in Windows Registry, rerun the command with the option --global.')
+      print('The changes made to environment variables only apply to the currently running shell instance. Use the \'emsdk_env.bat\' to re-enter this environment later, or if you\'d like to permanently register this environment globally to all users in Windows Registry, rerun this command with the option --global.')
     return 0
   elif cmd == 'install':
     # Process args
@@ -1763,8 +2069,13 @@ def main():
         GIT_CLONE_SHALLOW = True
         sys.argv[i] = ''
       elif sys.argv[i] == '--build-tests':
-        global BUILD_LLVM_TESTS
-        BUILD_LLVM_TESTS = True
+        BUILD_FOR_TESTING = True
+        sys.argv[i] = ''
+      elif sys.argv[i] == '--enable-assertions':
+        ENABLE_LLVM_ASSERTIONS = 'ON'
+        sys.argv[i] = ''
+      elif sys.argv[i] == '--disable-assertions':
+        ENABLE_LLVM_ASSERTIONS = 'OFF'
         sys.argv[i] = ''
     sys.argv = [x for x in sys.argv if not len(x) == 0]
     if len(sys.argv) <= 2:

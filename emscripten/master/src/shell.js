@@ -83,16 +83,9 @@ if (ENVIRONMENT_IS_NODE) {
   Module['read'] = function read(filename, binary) {
     if (!nodeFS) nodeFS = require('fs');
     if (!nodePath) nodePath = require('path');
-
     filename = nodePath['normalize'](filename);
     var ret = nodeFS['readFileSync'](filename);
-    // The path is absolute if the normalized version is the same as the resolved.
-    if (!ret && filename != nodePath['resolve'](filename)) {
-      filename = path.join(__dirname, '..', 'src', filename);
-      ret = nodeFS['readFileSync'](filename);
-    }
-    if (ret && !binary) ret = ret.toString();
-    return ret;
+    return binary ? ret : ret.toString();
   };
 
   Module['readBinary'] = function readBinary(filename) {
@@ -122,12 +115,14 @@ if (ENVIRONMENT_IS_NODE) {
     module['exports'] = Module;
   }
 
+#if NODEJS_CATCH_EXIT
   process['on']('uncaughtException', function(ex) {
     // suppress ExitStatus exceptions from showing an error
     if (!(ex instanceof ExitStatus)) {
       throw ex;
     }
   });
+#endif
 
   Module['inspect'] = function () { return '[Emscripten Module object]'; };
 }
@@ -138,7 +133,7 @@ else if (ENVIRONMENT_IS_SHELL) {
   if (typeof read != 'undefined') {
     Module['read'] = read;
   } else {
-    Module['read'] = function read() { throw 'no read() available (jsc?)' };
+    Module['read'] = function read() { throw 'no read() available' };
   }
 
   Module['readBinary'] = function readBinary(f) {

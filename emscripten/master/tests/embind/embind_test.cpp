@@ -873,6 +873,18 @@ TupleInStruct emval_test_take_and_return_TupleInStruct(TupleInStruct cs) {
     return cs;
 }
 
+struct NestedStruct {
+    int x;
+    int y;
+};
+struct ArrayInStruct {
+    int field1[2];
+    NestedStruct field2[2];
+};
+ArrayInStruct emval_test_take_and_return_ArrayInStruct(ArrayInStruct cs) {
+    return cs;
+}
+
 enum Enum { ONE, TWO };
 
 Enum emval_test_take_and_return_Enum(Enum e) {
@@ -1709,6 +1721,26 @@ EMSCRIPTEN_BINDINGS(tests) {
 
     function("emval_test_take_and_return_TupleInStruct", &emval_test_take_and_return_TupleInStruct);
 
+
+    value_array<std::array<int, 2>>("array_int_2")
+        .element(index<0>())
+        .element(index<1>())
+        ;
+    value_array<std::array<NestedStruct, 2>>("array_NestedStruct_2")
+        .element(index<0>())
+        .element(index<1>())
+        ;
+    value_object<NestedStruct>("NestedStruct")
+        .field("x", &NestedStruct::x)
+        .field("y", &NestedStruct::y)
+        ;
+
+    value_object<ArrayInStruct>("ArrayInStruct")
+        .field("field1", &ArrayInStruct::field1)
+        .field("field2", &ArrayInStruct::field2)
+        ;
+    function("emval_test_take_and_return_ArrayInStruct", &emval_test_take_and_return_ArrayInStruct);
+
     class_<ValHolder>("ValHolder")
         .smart_ptr<std::shared_ptr<ValHolder>>("std::shared_ptr<ValHolder>")
         .constructor<val>()
@@ -2262,6 +2294,27 @@ struct ConstAndNonConst {
     }
 };
 
+class DummyForOverloads {};
+
+class MultipleOverloadsDependingOnDummy {
+public:
+    DummyForOverloads dummy() {
+        return DummyForOverloads();
+    }
+
+    DummyForOverloads dummy(DummyForOverloads d) {
+        return d;
+    }
+};
+
+DummyForOverloads getDummy() {
+    return DummyForOverloads();
+}
+
+DummyForOverloads getDummy(DummyForOverloads d) {
+    return d;
+}
+
 EMSCRIPTEN_BINDINGS(overloads) {
     function("overloaded_function", select_overload<int(int)>(&overloaded_function));
     function("overloaded_function", select_overload<int(int, int)>(&overloaded_function));
@@ -2305,6 +2358,17 @@ EMSCRIPTEN_BINDINGS(overloads) {
     class_<ConstAndNonConst>("ConstAndNonConst")
         .function("method", select_const(&ConstAndNonConst::method))
         ;
+
+    class_<DummyForOverloads>("DummyForOverloads").constructor();
+
+    class_<MultipleOverloadsDependingOnDummy>("MultipleOverloadsDependingOnDummy")
+        .constructor()
+        .function("dummy", select_overload<DummyForOverloads()>(&MultipleOverloadsDependingOnDummy::dummy))
+        .function("dummy", select_overload<DummyForOverloads(DummyForOverloads)>(&MultipleOverloadsDependingOnDummy::dummy))
+        ;
+
+    function("getDummy", select_overload<DummyForOverloads(void)>(&getDummy));
+    function("getDummy", select_overload<DummyForOverloads(DummyForOverloads)>(&getDummy));
 }
 
 // tests for out-of-order registration
@@ -2785,10 +2849,10 @@ EMSCRIPTEN_BINDINGS(intrusive_pointers) {
 }
 
 std::string getTypeOfVal(const val& v) {
-    return v.typeof().as<std::string>();
+    return v.typeOf().as<std::string>();
 }
 
-EMSCRIPTEN_BINDINGS(typeof) {
+EMSCRIPTEN_BINDINGS(typeOf) {
     function("getTypeOfVal", &getTypeOfVal);
 }
 

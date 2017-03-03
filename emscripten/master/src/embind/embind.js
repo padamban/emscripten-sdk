@@ -144,6 +144,7 @@ var LibraryEmbind = {
     }
     else {
         Module[name] = value;
+        Module[name].argCount = numArguments;
     }
   },
 
@@ -615,6 +616,8 @@ var LibraryEmbind = {
             }
             var getElement;
             if (value instanceof Uint8Array) {
+                getElement = getTAElement;
+            } else if (value instanceof Uint8ClampedArray) {
                 getElement = getTAElement;
             } else if (value instanceof Int8Array) {
                 getElement = getTAElement;
@@ -1487,7 +1490,7 @@ var LibraryEmbind = {
     }
   },
 
-  $makeClassHandle__deps: ['throwInternalError'],
+  $makeClassHandle__deps: ['$throwInternalError'],
   $makeClassHandle: function(prototype, record) {
     if (!record.ptrType || !record.ptr) {
         throwInternalError('makeClassHandle requires ptr and ptrType');
@@ -1947,6 +1950,8 @@ var LibraryEmbind = {
             // Replace the initial unbound-handler-stub function with the appropriate member function, now that all types
             // are resolved. If multiple overloads are registered for this function, the function goes into an overload table.
             if (undefined === proto[methodName].overloadTable) {
+                // Set argCount in case an overload is registered later
+                memberFunction.argCount = argCount - 2;
                 proto[methodName] = memberFunction;
             } else {
                 proto[methodName].overloadTable[argCount - 2] = memberFunction;
@@ -2280,13 +2285,13 @@ var LibraryEmbind = {
     var shift = getShiftFromSize(size);
     name = readLatin1String(name);
 
-    function constructor() {
+    function ctor() {
     }
-    constructor.values = {};
+    ctor.values = {};
 
     registerType(rawType, {
         name: name,
-        constructor: constructor,
+        constructor: ctor,
         'fromWireType': function(c) {
             return this.constructor.values[c];
         },
@@ -2297,7 +2302,7 @@ var LibraryEmbind = {
         'readValueFromPointer': enumReadValueFromPointer(name, shift, isSigned),
         destructorFunction: null,
     });
-    exposePublicSymbol(name, constructor);
+    exposePublicSymbol(name, ctor);
   },
 
   _embind_register_enum_value__deps: [

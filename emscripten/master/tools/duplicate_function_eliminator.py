@@ -8,17 +8,17 @@ DUPLICATE_FUNCTION_ELIMINATOR = path_from_root('tools', 'eliminate-duplicate-fun
 def process_shell(js, js_engine, shell, equivalentfn_hash_info=None):
   suffix = '.eliminatedupes'
 
-  temp_file = temp_files.get(suffix + '.js').name
-  f = open(temp_file, 'w')
-  f.write(shell)
-  f.write('\n')
+  with temp_files.get_file(suffix + '.js') as temp_file:
+    f = open(temp_file, 'w')
+    f.write(shell)
+    f.write('\n')
 
-  f.write(equivalentfn_hash_info)
-  f.close()
+    f.write(equivalentfn_hash_info)
+    f.close()
 
-  (output,error) = subprocess.Popen(js_engine +
-      [DUPLICATE_FUNCTION_ELIMINATOR, temp_file, '--use-hash-info', '--no-minimize-whitespace'],
-      stdout=subprocess.PIPE,stderr=subprocess.PIPE).communicate()
+    (output,error) = subprocess.Popen(js_engine +
+        [DUPLICATE_FUNCTION_ELIMINATOR, temp_file, '--use-hash-info', '--no-minimize-whitespace'],
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE).communicate()
   assert len(output) > 0
   assert len(error) == 0
 
@@ -154,6 +154,8 @@ def write_equivalent_fn_hash_to_file(f, json_files, passed_in_filename):
 # the global set of function implementation hashes. If set to
 # False, we assume that we have to use the global hash info to
 # reduce the set of duplicate functions
+# Returns the filename of the processed JS file, which is expected to be
+# deleted by the caller once done.
 def run_on_js(filename, gen_hash_info=False):
   js_engine=shared.NODE_JS
 
@@ -247,6 +249,14 @@ EMSCRIPTEN_FUNCS();
       if DEBUG: print >> sys.stderr, 'splitting up js optimization into %d chunks, using %d cores  (total: %.2f MB)' % (len(chunks), cores, total_size/(1024*1024.))
       pool = multiprocessing.Pool(processes=cores)
       filenames = pool.map(run_on_chunk, commands, chunksize=1)
+      try:
+        # Shut down the pool, since otherwise processes are left alive and would only be lazily terminated,
+        # and in other parts of the toolchain we also build up multiprocessing pools.
+        pool.terminate()
+        pool.join()
+      except Exception, e:
+        # On Windows we get occassional "Access is denied" errors when attempting to tear down the pool, ignore these.
+        logging.debug('Attempting to tear down multiprocessing pool failed with an exception: ' + str(e))
     else:
       # We can't parallize, but still break into chunks to avoid uglify/node memory issues
       if len(chunks) > 1 and DEBUG: print >> sys.stderr, 'splitting up js optimization into %d chunks' % (len(chunks))
@@ -346,11 +356,12 @@ def eliminate_duplicate_funcs(file_name):
 
     # Generate the JSON for the equivalent hash first
     processed_file = run_on_js(filename=file_name, gen_hash_info=True)
-
-    save_temp_file(processed_file)
-
-    # Use the hash to reduce the JS file
-    final_file = run_on_js(filename=processed_file, gen_hash_info=False)
+    try:
+      save_temp_file(processed_file)
+      # Use the hash to reduce the JS file
+      final_file = run_on_js(filename=processed_file, gen_hash_info=False)
+    finally:
+      os.remove(processed_file)
 
     save_temp_file(final_file)
 
