@@ -11,7 +11,7 @@ else:
   from urllib2 import urlopen, HTTPError
 
 # EMSDK_DEV is a developer mode flag, which, if true, the SDK is downloaded from a 'staging' online source,
-# instead of the public source. New releases are first deployed to the staging source for testing, before 
+# instead of the public source. New releases are first deployed to the staging source for testing, before
 # being published to the public. Don't enable this unless you develop EMSDK itself and need to access the
 # staging source repository instead.
 EMSDK_DEV = bool(os.getenv('EMSDK_DEV')) if os.getenv('EMSDK_DEV') != None else False
@@ -54,6 +54,9 @@ GIT_CLONE_SHALLOW = False
 
 # If true, LLVM backend is built with tests enabled, and Binaryen is built with Visual Studio static analyzer enabled.
 BUILD_FOR_TESTING = False
+
+# If true, we will try to build WebAssembly support
+ENABLE_WASM = False
 
 # If 'auto', assertions are decided by the build type (Release&MinSizeRel=disabled, Debug&RelWithDebInfo=enabled)
 # Other valid values are 'ON' and 'OFF'
@@ -224,7 +227,7 @@ def win_set_environment_variable(key, value, system=True):
     if len(value) >= 1024:
       print('ERROR! The new environment variable ' + key + ' is more than 1024 characters long! A value this long cannot be set via command line: please add the environment variable specified above to system environment manually via Control Panel.', file=sys.stderr)
       sys.exit(1)
-    cmd = ['SETX', key, value] 
+    cmd = ['SETX', key, value]
     if VERBOSE: print(str(cmd))
     retcode = subprocess.call(cmd, stdout=subprocess.PIPE)
     if retcode is not 0:
@@ -309,6 +312,16 @@ def untargz(source_filename, dest_dir, unpack_even_if_exists=False):
   #tfile.extractall(dest_dir)
   return True
 
+# On Windows, it is not possible to reference path names that are longer than ~260 characters, unless the path is referenced via a "\\?\" prefix.
+# See https://msdn.microsoft.com/en-us/library/aa365247.aspx#maxpath and http://stackoverflow.com/questions/3555527/python-win32-filename-length-workaround
+# In that mode, forward slashes cannot be used as delimiters.
+def fix_potentially_long_windows_pathname(pathname):
+  if not WINDOWS: return pathname
+  # Test if emsdk calls fix_potentially_long_windows_pathname() with long relative paths (which is problematic)
+  if not os.path.isabs(pathname) and len(pathname) > 200: print('Warning: Seeing a relative path "' + pathname + '" which is dangerously long for being referenced as a short Windows path name. Refactor emsdk to be able to handle this!')
+  if pathname.startswith('\\\\?\\'): return pathname
+  return '\\\\?\\' + os.path.normpath(pathname.replace('/', '\\'))
+
 # http://stackoverflow.com/questions/12886768/simple-way-to-unzip-file-in-python-on-all-oses
 def unzip(source_filename, dest_dir, unpack_even_if_exists=False):
   if VERBOSE: print('unzip(source_filename=' + source_filename + ', dest_dir=' + dest_dir + ')')
@@ -340,24 +353,22 @@ def unzip(source_filename, dest_dir, unpack_even_if_exists=False):
 
       # Now do the actual decompress.
       for member in zf.infolist():
-        # Path traversal defense copied from
-        # http://hg.python.org/cpython/file/tip/Lib/http/server.py#l789
-        words = member.filename.split('/')
-        path = unzip_to_dir
-        for word in words[:-1]:
-          drive, word = os.path.splitdrive(word)
-          head, word = os.path.split(word)
-          if word in (os.curdir, os.pardir, ''): continue
-          path = os.path.join(path, word)
-        zf.extract(member, unzip_to_dir)
+        zf.extract(member, fix_potentially_long_windows_pathname(unzip_to_dir))
+
+        # Move the extracted file to its final location without the base directory name, if we are stripping that away.
+        if common_subdir:
+          if not member.filename.startswith(common_subdir):
+            raise Exception('Unexpected filename "' + member.filename + '"!')
+          stripped_filename = '.' + member.filename[len(common_subdir):]
+          final_dst_filename = os.path.join(dest_dir, stripped_filename)
+          if stripped_filename.endswith('/'): # Directory?
+            d = fix_potentially_long_windows_pathname(final_dst_filename)
+            if not os.path.isdir(d): os.mkdir(d)
+          else:
+            tmp_dst_filename = os.path.join(unzip_to_dir, member.filename)
+            os.rename(fix_potentially_long_windows_pathname(tmp_dst_filename), fix_potentially_long_windows_pathname(final_dst_filename))
 
       if common_subdir:
-        try:
-          if os.path.exists(dest_dir):
-            remove_tree(dest_dir)
-        except:
-          pass
-        shutil.copytree(os.path.join(unzip_to_dir, common_subdir), dest_dir)
         try:
           remove_tree(unzip_to_dir)
         except:
@@ -407,7 +418,7 @@ def download_file(url, dstpath, download_even_if_exists=False, filename_prefix =
   try:
     u = urlopen(url)
     mkdir_p(os.path.dirname(file_name))
-    with open(file_name, 'wb') as f: 
+    with open(file_name, 'wb') as f:
       meta = u.info()
       if hasattr(meta.getheaders, "Content-Length"):
         file_size = int(meta.getheaders("Content-Length")[0])
@@ -681,7 +692,7 @@ def cmake_configure(generator, build_root, src_root, build_type, extra_cmake_arg
     if ret != 0:
       print('CMake invocation failed with exit code ' + ret + '!', file=sys.stderr)
       print('Working directory: ' + build_root, file=sys.stderr)
-      return False  
+      return False
   except OSError as e:
     if e.errno == errno.ENOENT:
       print(str(e), file=sys.stderr)
@@ -691,7 +702,7 @@ def cmake_configure(generator, build_root, src_root, build_type, extra_cmake_arg
       elif LINUX:
         print('Installing this package requires CMake. Get it via your system package manager (e.g. sudo apt-get install cmake), or from http://www.cmake.org/', file=sys.stderr)
       elif OSX:
-        print('Installing this package requires CMake. Get it via a OSX package manager (Homebrew: "brew install cmake", or MacPorts: "sudo port install cmake"), or from http://www.cmake.org/', file=sys.stderr)        
+        print('Installing this package requires CMake. Get it via a OSX package manager (Homebrew: "brew install cmake", or MacPorts: "sudo port install cmake"), or from http://www.cmake.org/', file=sys.stderr)
       return False
     raise
   except Exception as e:
@@ -734,6 +745,8 @@ def build_fastcomp_tool(tool):
   enable_assertions = ENABLE_LLVM_ASSERTIONS.lower() == 'on' or (ENABLE_LLVM_ASSERTIONS == 'auto' and build_type.lower() != 'release' and build_type.lower() != 'minsizerel')
 
   args = ['-DLLVM_TARGETS_TO_BUILD=X86;JSBackend', '-DLLVM_INCLUDE_EXAMPLES=OFF', '-DCLANG_INCLUDE_EXAMPLES=OFF', '-DLLVM_INCLUDE_TESTS=' + tests_arg, '-DCLANG_INCLUDE_TESTS=' + tests_arg, '-DLLVM_ENABLE_ASSERTIONS=' + ('ON' if enable_assertions else 'OFF')]
+  if ENABLE_WASM:
+    args += ['-DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly']
   success = cmake_configure(cmake_generator, build_root, fastcomp_src_root, build_type, args)
   if not success: return False
 
@@ -909,7 +922,7 @@ def generate_dot_emscripten(active_tools):
   has_node = False
 
   cfg = 'import os\n'
-  
+
   if embedded:
     cfg += "emsdk_path=os.path.dirname(os.environ.get('EM_CONFIG')).replace('\\\\', '/')\n"
 
@@ -939,7 +952,7 @@ JS_ENGINES = [NODE_JS]
     cfg = cfg.replace(emscripten_config_directory, "' + emsdk_path + '")
 
   with open(dot_emscripten_path(), "w") as text_file: text_file.write(cfg)
-  
+
   # Clear old cached emscripten content.
   try:
     remove_tree(os.path.join(emscripten_config_directory, ".emscripten_cache"))
@@ -952,7 +965,7 @@ JS_ENGINES = [NODE_JS]
   print('')
   print(cfg.strip())
   print('')
-  
+
   path_add = get_required_path(active_tools)
   if not WINDOWS:
     emsdk_env = os.path.relpath(sdk_path('emsdk_env.sh'))
@@ -1064,7 +1077,7 @@ class Tool:
       return self.expand_vars(self.activated_env)
     else:
       return ''
-  
+
   def compatible_with_this_os(self):
     if hasattr(self, 'os'):
       if self.os == 'all':
@@ -1113,7 +1126,7 @@ class Tool:
           if not os.path.exists(path): return False
         return True
       content_exists = os.path.exists(self.installation_path()) and each_path_exists(activated_path) and (os.path.isfile(self.installation_path()) or num_files_in_directory(self.installation_path()) > 0)
-      
+
       if self.id == 'vs-tool': # vs-tool is a special tool since all versions must be installed to the same dir, so dir name will not differentiate the version.
         return content_exists and get_installed_vstool_version(self.installation_path()) == self.version
       elif hasattr(self, 'custom_is_installed_script'):
@@ -1129,9 +1142,9 @@ class Tool:
     if not self.is_installed():
       return False
 
-    if self.id == 'vs-tool': 
+    if self.id == 'vs-tool':
       return True # vs-tool is a special tool since all versions must be installed to the same dir, which means that if this tool is installed, it is also active.
-      
+
     # All dependencies of this tool must be active as well.
     deps = self.dependencies()
     for tool in deps:
@@ -1180,7 +1193,7 @@ class Tool:
         win_delete_environment_variable(key, False) # If there is an env var for the LOCAL USER with same name, it will hide the system var, so must remove that first.
 
       win_set_environment_variable(key, value, permanently_activate)
-    
+
   # If this tool can be installed on this system, this function returns True.
   # Otherwise, this function returns a string that describes the reason why this tool is not available.
   def can_be_installed(self):
@@ -1262,6 +1275,7 @@ class Tool:
     if url.endswith('zip') or url.endswith('.tar') or url.endswith('.gz'):
       file_name = url.split('/')[-1]
       tempzipfile = os.path.join('zips/', file_name)
+      if VERBOSE: print("Deleting temporary zip file " + tempzipfile)
       rmfile(tempzipfile)
 
   def uninstall(self):
@@ -1285,7 +1299,7 @@ class Tool:
     if not hasattr(self, 'uses'):
       return []
     deps = []
-    
+
     for tool_name in self.uses:
       tool = find_tool(tool_name)
       if tool:
@@ -1426,7 +1440,7 @@ def fetch_emscripten_tags():
   all_tags = sorted(all_tags, cmp=version_compare)
   open(sdk_path('emscripten-tags.txt'), 'w').write('\n'.join(all_tags))
   if len(all_tags) > 0:
-    print('Done. ' + str(len(all_tags)) + ' tagged releases available, latest is ' + all_tags[-1] + '.') 
+    print('Done. ' + str(len(all_tags)) + ' tagged releases available, latest is ' + all_tags[-1] + '.')
   else:
     print('Done. No tagged releases available.')
 
@@ -1462,7 +1476,19 @@ def fetch_emscripten_tags():
   download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/llvm/nightly/' + os_name_for_llvm_location() + '_64bit/index.txt', 'llvm-nightlies-64bit.txt', download_even_if_exists=True)
   download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/emscripten/nightly/' + os_name_for_emscripten_location() + '/index.txt', 'emscripten-nightlies.txt', download_even_if_exists=True)
 
+  print('Fetching all precompiled tagged releases..')
+  download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/llvm/tag/' + os_name_for_llvm_location() + '_32bit/index.txt', 'llvm-tags-32bit.txt', download_even_if_exists=True)
+  download_file('https://s3.amazonaws.com/mozilla-games/emscripten/packages/llvm/tag/' + os_name_for_llvm_location() + '_64bit/index.txt', 'llvm-tags-64bit.txt', download_even_if_exists=True)
+
+def is_emsdk_sourced_from_github():
+  return os.path.exists(os.path.join(emsdk_path(), '.git'))
+
 def update_emsdk():
+  if is_emsdk_sourced_from_github():
+    print('You seem to have bootstrapped Emscripten SDK by cloning from GitHub. In this case, use "git pull" instead of "emsdk update" to update emsdk. (Not doing that automatically in case you have local changes)', file=sys.stderr)
+    print('Alternatively, use "emsdk update-tags" to refresh the latest list of tags from the different Git repositories.', file=sys.stderr)
+    sys.exit(1)
+  sys.exit(0)
   if WINDOWS:
     download_and_unzip(urljoin(emsdk_packages_url, 'emsdk_windows_update.zip'), emsdk_path(), download_even_if_exists=True)
     rmfile('zips/emsdk_windows_update.zip')
@@ -1473,6 +1499,7 @@ def update_emsdk():
     print('Unsupported OS, cannot update!')
   fetch_emscripten_tags()
 
+# Lists all tagged versions directly in the Git repositories. These we can pull and compile from source.
 def load_emscripten_tags():
   try:
     return open(sdk_path('emscripten-tags.txt'), 'r').read().split('\n')
@@ -1493,10 +1520,10 @@ def remove_suffix(s, suffix):
   if s.endswith(suffix): return s[:len(s)-len(suffix)]
   else: return s
 
-# Kind should be one of: 'llvm-nightlies-32bit.txt', 'llvm-nightlies-64bit.txt', 'emscripten-nightlies.txt'
-def load_nightlies_list(kind):
+# filename should be one of: 'llvm-nightlies-32bit.txt', 'llvm-nightlies-64bit.txt', 'llvm-precompiled-tags-32bit.txt', 'llvm-precompiled-tags-64bit.txt', 'emscripten-nightlies.txt'
+def load_file_index_list(filename):
   try:
-    items = open(sdk_path(kind), 'r').read().split('\n')
+    items = open(sdk_path(filename), 'r').read().split('\n')
     items = map(lambda x: remove_suffix(remove_suffix(remove_prefix(remove_prefix(x, 'emscripten-llvm-e'), 'emscripten-nightly-'), '.tar.gz'), '.zip').strip(), items)
     items = filter(lambda x: 'latest' not in x and len(x) > 0, items)
     return items
@@ -1504,13 +1531,19 @@ def load_nightlies_list(kind):
     return []
 
 def load_llvm_32bit_nightlies():
-  return load_nightlies_list('llvm-nightlies-32bit.txt')
+  return load_file_index_list('llvm-nightlies-32bit.txt')
 
 def load_llvm_64bit_nightlies():
-  return load_nightlies_list('llvm-nightlies-64bit.txt')
+  return load_file_index_list('llvm-nightlies-64bit.txt')
 
 def load_emscripten_nightlies():
-  return load_nightlies_list('emscripten-nightlies.txt')
+  return load_file_index_list('emscripten-nightlies.txt')
+
+def load_llvm_precompiled_tags_32bit():
+  return load_file_index_list('llvm-tags-32bit.txt')
+
+def load_llvm_precompiled_tags_64bit():
+  return load_file_index_list('llvm-tags-64bit.txt')
 
 def load_sdk_manifest():
   global tools, sdks
@@ -1522,6 +1555,9 @@ def load_sdk_manifest():
     return
 
   emscripten_tags = load_emscripten_tags()
+  llvm_precompiled_tags_32bit = list(reversed(load_llvm_precompiled_tags_32bit()))
+  llvm_precompiled_tags_64bit = list(reversed(load_llvm_precompiled_tags_64bit()))
+  llvm_precompiled_tags = llvm_precompiled_tags_32bit + llvm_precompiled_tags_64bit
   binaryen_tags = load_binaryen_tags()
   llvm_32bit_nightlies = list(reversed(load_llvm_32bit_nightlies()))
   llvm_64bit_nightlies = list(reversed(load_llvm_64bit_nightlies()))
@@ -1559,16 +1595,14 @@ def load_sdk_manifest():
         t.is_old = False
 
       # Expand the metapackages that refer to tags or nightlies.
-      if '%tag%' in t.version:
-        expand_category_param('%tag%', emscripten_tags, t, is_sdk=False)
-      elif '%binaryen_tag%' in t.version:
-        expand_category_param('%binaryen_tag%', binaryen_tags, t, is_sdk=False)
-      elif '%nightly-llvm-64bit%' in t.version:
-        expand_category_param('%nightly-llvm-64bit%', llvm_64bit_nightlies, t, is_sdk=False)
-      elif '%nightly-llvm-32bit%' in t.version:
-        expand_category_param('%nightly-llvm-32bit%', llvm_32bit_nightlies, t, is_sdk=False)
-      elif '%nightly-emscripten%' in t.version:
-        expand_category_param('%nightly-emscripten%', emscripten_nightlies, t, is_sdk=False)
+      if '%tag%' in t.version: expand_category_param('%tag%', emscripten_tags, t, is_sdk=False)
+      elif '%precompiled_tag%' in t.version: expand_category_param('%precompiled_tag%', llvm_precompiled_tags, t, is_sdk=False)
+      elif '%precompiled_tag32%' in t.version: expand_category_param('%precompiled_tag32%', llvm_precompiled_tags_32bit, t, is_sdk=False)
+      elif '%precompiled_tag64%' in t.version: expand_category_param('%precompiled_tag64%', llvm_precompiled_tags_64bit, t, is_sdk=False)
+      elif '%binaryen_tag%' in t.version: expand_category_param('%binaryen_tag%', binaryen_tags, t, is_sdk=False)
+      elif '%nightly-llvm-64bit%' in t.version: expand_category_param('%nightly-llvm-64bit%', llvm_64bit_nightlies, t, is_sdk=False)
+      elif '%nightly-llvm-32bit%' in t.version: expand_category_param('%nightly-llvm-32bit%', llvm_32bit_nightlies, t, is_sdk=False)
+      elif '%nightly-emscripten%' in t.version: expand_category_param('%nightly-emscripten%', emscripten_nightlies, t, is_sdk=False)
       else:
         tools.append(t)
 
@@ -1579,14 +1613,13 @@ def load_sdk_manifest():
       if not hasattr(sdk, 'is_old'):
         sdk.is_old = False
 
-      if '%tag%' in sdk.version:
-        expand_category_param('%tag%', emscripten_tags, sdk, is_sdk=True)
-      elif '%nightly-llvm-64bit%' in sdk.version:
-        expand_category_param('%nightly-llvm-64bit%', llvm_64bit_nightlies, sdk, is_sdk=True)
-      elif '%nightly-llvm-32bit%' in sdk.version:
-        expand_category_param('%nightly-llvm-32bit%', llvm_32bit_nightlies, sdk, is_sdk=True)
-      elif '%nightly-emscripten%' in sdk.version:
-        expand_category_param('%nightly-emscripten%', emscripten_nightlies, sdk, is_sdk=True)
+      if '%tag%' in sdk.version: expand_category_param('%tag%', emscripten_tags, sdk, is_sdk=True)
+      elif '%precompiled_tag%' in sdk.version: expand_category_param('%precompiled_tag%', llvm_precompiled_tags, sdk, is_sdk=True)
+      elif '%precompiled_tag32%' in sdk.version: expand_category_param('%precompiled_tag32%', llvm_precompiled_tags_32bit, sdk, is_sdk=True)
+      elif '%precompiled_tag64%' in sdk.version: expand_category_param('%precompiled_tag64%', llvm_precompiled_tags_64bit, sdk, is_sdk=True)
+      elif '%nightly-llvm-64bit%' in sdk.version: expand_category_param('%nightly-llvm-64bit%', llvm_64bit_nightlies, sdk, is_sdk=True)
+      elif '%nightly-llvm-32bit%' in sdk.version: expand_category_param('%nightly-llvm-32bit%', llvm_32bit_nightlies, sdk, is_sdk=True)
+      elif '%nightly-emscripten%' in sdk.version: expand_category_param('%nightly-emscripten%', emscripten_nightlies, sdk, is_sdk=True)
       else:
         sdks.append(sdk)
 
@@ -1784,8 +1817,6 @@ def silentremove(filename):
 
 def main():
   global emscripten_config_directory, BUILD_FOR_TESTING, ENABLE_LLVM_ASSERTIONS
-  load_dot_emscripten()
-  load_sdk_manifest()
 
   if len(sys.argv) <= 1 or sys.argv[1] == 'help' or sys.argv[1] == '--help':
     if len(sys.argv) <= 1:
@@ -1800,7 +1831,9 @@ def main():
                                   shown.
 
    emsdk update                 - Updates emsdk to the newest version, and also
-                                  runs 'update-tags' (below).
+                                  runs 'update-tags' (below). If you have
+                                  bootstrapped emsdk via cloning directly from
+                                  GitHub, call "git pull" instead to update emsdk.
 
    emsdk update-tags            - Fetches the most up to date list of available
                                   Emscripten tagged and nightly releases.
@@ -1847,11 +1880,14 @@ def main():
                                   passed to the emsdk activate command to
                                   activate the desired version.
 
+                   --enable-wasm: Enable WebAssembly support in the
+                                  installed components.
+
    emsdk uninstall <tool/sdk>   - Removes the given tool or SDK from disk.''')
 
     if WINDOWS:
       print('''
-   emsdk activate [--global] [--embedded] [--build=type] [--vs2013/--vs2015] <tool/sdk> 
+   emsdk activate [--global] [--embedded] [--build=type] [--vs2013/--vs2015] <tool/sdk>
 
                                 - Activates the given tool or SDK in the
                                   environment of the current shell. If the
@@ -1892,6 +1928,13 @@ def main():
        'incoming' SDK.''')
     return 1
   cmd = sys.argv[1]
+
+  # On first run when tag list is not present, populate it to bootstrap.
+  if (cmd == 'install' or cmd == 'list') and not os.path.isfile(sdk_path('llvm-tags-64bit.txt')):
+    fetch_emscripten_tags()
+
+  load_dot_emscripten()
+  load_sdk_manifest()
 
   # Process global args
   for i in range(2, len(sys.argv)):
@@ -1967,7 +2010,10 @@ def main():
       print('The following tools can be compiled from source:')
       print_tools(find_tools(True))
     else:
-      print("There are no tools available. Run 'emsdk update' to fetch the latest set of tools.")
+      if is_emsdk_sourced_from_github():
+        print("There are no tools available. Run 'git pull' followed by 'emsdk update-tags' to fetch the latest set of tools.")
+      else:
+        print("There are no tools available. Run 'emsdk update' to fetch the latest set of tools.")
       print('')
 
     if len(sdks) > 0:
@@ -1986,7 +2032,10 @@ def main():
           active = '*' if sdk.is_active() else ' '
           print('    ' + active + '    {0: <25}'.format(str(sdk)) + installed)
         print('')
-      print('The following precompiled SDKs are available for download: (Run "./emsdk update" to pull in the latest list)')
+      if is_emsdk_sourced_from_github():
+        print('The following precompiled SDKs are available for download: (Run "git pull" followed by "./emsdk update-tags" to pull in the latest list)')
+      else:
+        print('The following precompiled SDKs are available for download: (Run "./emsdk update" to pull in the latest list)')
       print_sdks(find_sdks(False))
       print('The following SDKs can be compiled from source:')
       print_sdks(find_sdks(True))
@@ -2076,6 +2125,10 @@ def main():
         sys.argv[i] = ''
       elif sys.argv[i] == '--disable-assertions':
         ENABLE_LLVM_ASSERTIONS = 'OFF'
+        sys.argv[i] = ''
+      elif sys.argv[i] == '--enable-wasm':
+        global ENABLE_WASM
+        ENABLE_WASM = True
         sys.argv[i] = ''
     sys.argv = [x for x in sys.argv if not len(x) == 0]
     if len(sys.argv) <= 2:
