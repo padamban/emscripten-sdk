@@ -36,10 +36,9 @@ env:
   - NUMJOBS=4
   - CCACHE_SLOPPINESS=pch_defines,time_macros
   - CCACHE_COMPRESS=1
-  - CLANG=release_39
   matrix:
-    - BRANCH=master
-    - BRANCH=incoming
+    - BRANCH=master CLANG=release_39
+    - BRANCH=incoming CLANG=release_40
 before_script:
   - if [[ ! -f $HOME/cmake-3.7.2-Linux-x86_64/bin/cmake ]]; then wget --no-check-certificate https://cmake.org/files/v3.7/cmake-3.7.2-Linux-x86_64.tar.gz -O $HOME/cmake.tar.gz && tar xf $HOME/cmake.tar.gz -C $HOME && rm $HOME/cmake.tar.gz; fi
   - export PATH=$HOME:$HOME/cmake-3.7.2-Linux-x86_64/bin:$PATH CXX=g++-4.9 CC=gcc-4.9
