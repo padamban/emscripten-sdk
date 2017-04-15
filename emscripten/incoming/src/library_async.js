@@ -122,7 +122,7 @@ mergeInto(LibraryManager.library, {
  */
   emscripten_coroutine_create__sig: 'iii',
   emscripten_coroutine_create__asm: true,
-  emscripten_coroutine_create__deps: ['malloc'],
+  emscripten_coroutine_create__deps: ['malloc', 'emscripten_alloc_async_context'],
   emscripten_coroutine_create: function(f, arg, stack_size) {
     f = f|0;
     arg = arg|0;
@@ -434,3 +434,6 @@ mergeInto(LibraryManager.library, {
 #endif // ASYNCIFY
 });
 
+if (EMTERPRETIFY_ASYNC && !EMTERPRETIFY) {
+  error('You must enable EMTERPRETIFY to use EMTERPRETIFY_ASYNC');
+}
