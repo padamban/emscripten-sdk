@@ -6,6 +6,9 @@ emscripten-llvm-e1.37.5.tar.gz
 emscripten-llvm-e1.37.4.tar.gz
 emscripten-llvm-e1.37.3.tar.gz
 emscripten-llvm-e1.37.2.tar.gz
+emscripten-llvm-e1.37.12.tar.gz
+emscripten-llvm-e1.37.11.tar.gz
+emscripten-llvm-e1.37.10.tar.gz
 emscripten-llvm-e1.37.1.tar.gz
 emscripten-llvm-e1.37.0.tar.gz
 emscripten-llvm-e1.36.14.tar.gz

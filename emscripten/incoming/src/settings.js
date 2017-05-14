@@ -32,6 +32,8 @@ var ASSERTIONS = 1; // Whether we should add runtime assertions, for example to
                     // of positive size, etc., whether we should throw if we encounter a bad __label__, i.e.,
                     // if code flow runs into a fault
                     // ASSERTIONS == 2 gives even more runtime checks
+var RUNTIME_LOGGING = 0; // Whether extra logging should be enabled.
+                         // This logging isn't quite assertion-quality in that it isn't necessarily a symptom that something is wrong.
 var STACK_OVERFLOW_CHECK = 0; // Chooses what kind of stack smash checks to emit to generated code:
                               // 0: Stack overflows are not checked.
                               // 1: Adds a security cookie at the top of the stack, which is checked at end of each tick and at exit (practically zero performance overhead)
@@ -578,6 +580,15 @@ var MODULARIZE = 0; // By default we emit all code in a straightforward way into
                     // Note the parentheses - we are calling EXPORT_NAME in order to instantiate
                     // the module. (This allows, in particular, for you to create multiple
                     // instantiations, etc.)
+                    //
+                    // Modularize also provides a promise-like API,
+                    //
+                    //   var instance = EXPORT_NAME().then(function(Module) { .. });
+                    //
+                    // The callback is called when it is safe to run compiled code, similar
+                    // to the onRuntimeInitialized callback (i.e., it waits for all
+                    // necessary async events). It receives the instance as a parameter,
+                    // for convenience.
 
 var BENCHMARK = 0; // If 1, will just time how long main() takes to execute, and not
                    // print out anything at all whatsoever. This is useful for benchmarking.
@@ -690,14 +701,14 @@ var BINARYEN_IGNORE_IMPLICIT_TRAPS = 0; // Whether to ignore implicit traps when
                                         // is out of bounds, or div/rem of 0, etc. We can reorder them,
                                         // but we can't ignore that they have side effects, so turning on
                                         // this flag lets us do a little more to reduce code size.
-var BINARYEN_TRAP_MODE = "js"; // How we handle wasm operations that may trap, which includes integer
-                               // div/rem of 0 and float-to-int of values too large to fit in an int.
-                               //   js: do exactly what js does. this can be slower.
-                               //   clamp: avoid traps by clamping to a reasonable value. this can be
-                               //          faster than "js".
-                               //   allow: allow creating operations that can trap. this is the most
-                               //          compact, as we just emit a single wasm operation, with no
-                               //          guards to trapping values, and also often the fastest.
+var BINARYEN_TRAP_MODE = "allow"; // How we handle wasm operations that may trap, which includes integer
+                                  // div/rem of 0 and float-to-int of values too large to fit in an int.
+                                  //   js: do exactly what js does. this can be slower.
+                                  //   clamp: avoid traps by clamping to a reasonable value. this can be
+                                  //          faster than "js".
+                                  //   allow: allow creating operations that can trap. this is the most
+                                  //          compact, as we just emit a single wasm operation, with no
+                                  //          guards to trapping values, and also often the fastest.
 var BINARYEN_PASSES = ""; // A comma-separated list of passes to run in the binaryen optimizer,
                           // for example, "dce,precompute,vacuum".
                           // When set, this overrides the default passes we would normally run.
@@ -709,6 +720,13 @@ var BINARYEN_ASYNC_COMPILATION = 1; // Whether to compile the wasm asynchronousl
                                     // required for all but the smallest modules to run in V8
 var BINARYEN_ROOT = ""; // Directory where we can find Binaryen. Will be automatically set for you,
                         // but you can set it to override if you are a Binaryen developer.
+
+var LEGALIZE_JS_FFI = 1; // Whether to legalize the JS FFI interfaces (imports/exports) by wrapping
+                         // them to automatically demote i64 to i32 and promote f32 to f64. This is
+                         // necessary in order to interface with JavaScript, both for asm.js and wasm.
+                         // For non-web/non-JS embeddings, setting this to 0 may be desirable.
+                         // LEGALIZE_JS_FFI=0 is incompatible with RUNNING_JS_OPTS and using
+                         // non-wasm BINARYEN_METHOD settings.
 
 var WASM = 0; // Alias for BINARYEN, the two are identical. Both make us compile code to WebAssembly.
 

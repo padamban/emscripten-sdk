@@ -2080,6 +2080,12 @@ function integrateWasmJS(Module) {
   var wasmBinaryFile = Module['wasmBinaryFile'] || '{{{ WASM_BINARY_FILE }}}';
   var asmjsCodeFile = Module['asmjsCodeFile'] || '{{{ ASMJS_CODE_FILE }}}';
 
+  if (typeof Module['locateFile'] === 'function') {
+    wasmTextFile = Module['locateFile'](wasmTextFile);
+    wasmBinaryFile = Module['locateFile'](wasmBinaryFile);
+    asmjsCodeFile = Module['locateFile'](asmjsCodeFile);
+  }
+
   // utilities
 
   var wasmPageSize = 64*1024;
@@ -2192,7 +2198,12 @@ function integrateWasmJS(Module) {
   function getBinaryPromise() {
     // if we don't have the binary yet, and have the Fetch api, use that
     if (!Module['wasmBinary'] && typeof fetch === 'function') {
-      return fetch(wasmBinaryFile).then(function(response) { return response['arrayBuffer']() });
+      return fetch(wasmBinaryFile).then(function(response) {
+        if (!response['ok']) {
+          throw "failed to load wasm binary file at '" + wasmBinaryFile + "'";
+        }
+        return response['arrayBuffer']()
+      });
     }
     // Otherwise, getBinary should be able to get it synchronously
     return new Promise(function(resolve, reject) {
@@ -2263,7 +2274,9 @@ function integrateWasmJS(Module) {
     }
 
 #if BINARYEN_ASYNC_COMPILATION
+#if RUNTIME_LOGGING
     Module['printErr']('asynchronously preparing wasm');
+#endif
     getBinaryPromise().then(function(binary) {
       return WebAssembly.instantiate(binary, info)
     }).then(function(output) {
@@ -2427,7 +2440,9 @@ function integrateWasmJS(Module) {
     for (var i = 0; i < methods.length; i++) {
       var curr = methods[i];
 
+#if RUNTIME_LOGGING
       Module['printErr']('trying binaryen method: ' + curr);
+#endif
 
       if (curr === 'native-wasm') {
         if (exports = doNativeWasm(global, env, providedBuffer)) break;
@@ -2442,7 +2457,9 @@ function integrateWasmJS(Module) {
 
     if (!exports) throw 'no binaryen method succeeded. consider enabling more options, like interpreting, if you want that: https://github.com/kripken/emscripten/wiki/WebAssembly#binaryen-methods';
 
+#if RUNTIME_LOGGING
     Module['printErr']('binaryen method succeeded.');
+#endif
 
     return exports;
   };
