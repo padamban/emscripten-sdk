@@ -747,6 +747,10 @@ def build_fastcomp_tool(tool):
   args = ['-DLLVM_TARGETS_TO_BUILD=X86;JSBackend', '-DLLVM_INCLUDE_EXAMPLES=OFF', '-DCLANG_INCLUDE_EXAMPLES=OFF', '-DLLVM_INCLUDE_TESTS=' + tests_arg, '-DCLANG_INCLUDE_TESTS=' + tests_arg, '-DLLVM_ENABLE_ASSERTIONS=' + ('ON' if enable_assertions else 'OFF')]
   if ENABLE_WASM:
     args += ['-DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly']
+  if os.environ.get('LLVM_CMAKE_ARGS'):
+    extra_args = os.environ['LLVM_CMAKE_ARGS'].split(',')
+    print('Passing the following extra arguments to LLVM CMake configuration: ' + str(extra_args))
+    args += extra_args
   success = cmake_configure(cmake_generator, build_root, fastcomp_src_root, build_type, args)
   if not success: return False
 
@@ -1520,12 +1524,40 @@ def remove_suffix(s, suffix):
   if s.endswith(suffix): return s[:len(s)-len(suffix)]
   else: return s
 
+def try_int(a):
+  try:
+    return int(a)
+  except:
+    return None
+
+def sort_by_version(a, b):
+  a = re.split('[\\._\\-]', a)
+  b = re.split('[\\._\\-]', b)
+  for i in range(min(len(a), len(b))):
+    a_int = try_int(a[i])
+    b_int = try_int(b[i])
+    if a_int != None and b_int != None:
+      if a_int < b_int:
+        return -1
+      if b_int > a_int:
+        return 1
+    else:
+      if a[i] < b[i]:
+        return -1
+      if b[i] > a[i]:
+        return 1
+  return 0
+
 # filename should be one of: 'llvm-nightlies-32bit.txt', 'llvm-nightlies-64bit.txt', 'llvm-precompiled-tags-32bit.txt', 'llvm-precompiled-tags-64bit.txt', 'emscripten-nightlies.txt'
 def load_file_index_list(filename):
   try:
     items = open(sdk_path(filename), 'r').read().split('\n')
     items = map(lambda x: remove_suffix(remove_suffix(remove_prefix(remove_prefix(x, 'emscripten-llvm-e'), 'emscripten-nightly-'), '.tar.gz'), '.zip').strip(), items)
     items = filter(lambda x: 'latest' not in x and len(x) > 0, items)
+
+    # Sort versions from oldest to newest (the default sort would be lexicographic, i.e. '1.37.1 < 1.37.10 < 1.37.2')
+    items = sorted(items, cmp=sort_by_version)[::-1]
+
     return items
   except:
     return []
@@ -1882,6 +1914,12 @@ def main():
 
                    --enable-wasm: Enable WebAssembly support in the
                                   installed components.
+
+                                  To pass custom CMake directives when configuring
+                                  LLVM build, specify the environment variable
+                                  LLVM_CMAKE_ARGS="param1=value1,param2=value2"
+                                  in the environment where the build is invoked.
+                                  See README.md for details.
 
    emsdk uninstall <tool/sdk>   - Removes the given tool or SDK from disk.''')
 
