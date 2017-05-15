@@ -25,11 +25,11 @@ compiler: gcc
 cache:
   ccache: true
   directories:
-    - /home/travis/cmake-3.7.2-Linux-x86_64/bin
-    - /home/travis/cmake-3.7.2-Linux-x86_64/share
-#dist: trusty
+    - /home/travis/cmake-3.8.1-Linux-x86_64/bin
+    - /home/travis/cmake-3.8.1-Linux-x86_64/share
+dist: trusty
 sudo: false
-addons: {apt: {sources: ubuntu-toolchain-r-test, packages: [g++-4.9, libedit-dev]}}
+addons: {apt: {packages: libedit-dev}}
 env:
   global:
   - secure: qlNSeWpcyEVsMYW9gW8xjDXjf8q7UFkMOSDw6IjFaJ5r0t+7wjVPD9A+dso8aGa6ed7rLFT6S2+ob5xY1x/DpnabDoWbUzgLp73sHZZ8xgwVHtcA9z0VOlnscK2uV652R1+Vln8zkVK6DhE7tL9JconQLG66+hmjaatLSBu77J3UxKpOPwN0hgcP0uD0AwH9VRIlWxkXTr+eWtDSC+kRWyIM0zQwaXaRb9itxtJidQ0rQZ3lqv+lY+ll1Kb9Pbal4pttgEm5iHD1TQWTjJnq3gY6qCsCTDERUhcfspfPRUjubObEsmqw3WRDlszU47Qq9jNYjDYdqjUo/rEC2hOHW5dAC8bjRuwMQH4683TOKxv35Hk3RhF8kjoOBYOw/w6Q1PZGPHn0eti3fbiHdfls6DfOO0SbEihMoVGRERGwLJ3vjQeQVXrg5NZKe+VcjmDdN7HV7hk6+Ii9fOrr8WT3DII8GoSGMSdegQSPDL5s/nWnDcT7CObXX27QQHCosciwWe8TTawHvgL+fjNrIR85NSBaJ5wBC9fu53QE9h2jHCLrW7gBOBKx1B5b7sa6E/0NkwQdG68a/0VHdnL0CDZFrNSUKIt3TpdejwpDa/WzdA6l2sgjRVuppXQmhlhbUMSBTHtQjeBHwd6KBrVHImSDjYHsBLsJ5ftL2X8iu7cub60=
@@ -40,9 +40,8 @@ env:
     - BRANCH=master CLANG=release_39
     - BRANCH=incoming CLANG=release_40
 before_script:
-  - if [[ ! -f $HOME/cmake-3.7.2-Linux-x86_64/bin/cmake ]]; then wget --no-check-certificate https://cmake.org/files/v3.7/cmake-3.7.2-Linux-x86_64.tar.gz -O $HOME/cmake.tar.gz && tar xf $HOME/cmake.tar.gz -C $HOME && rm $HOME/cmake.tar.gz; fi
-  - export PATH=$HOME:$HOME/cmake-3.7.2-Linux-x86_64/bin:$PATH CXX=g++-4.9 CC=gcc-4.9
-  - for compiler in $CXX $CC; do ln -s $(which ccache) $HOME/$compiler; done
+  - if [[ ! -f $HOME/cmake-3.8.1-Linux-x86_64/bin/cmake ]]; then wget --no-check-certificate https://cmake.org/files/v3.8/cmake-3.8.1-Linux-x86_64.tar.gz -O $HOME/cmake.tar.gz && tar xf $HOME/cmake.tar.gz -C $HOME && rm $HOME/cmake.tar.gz; fi
+  - export PATH=$HOME/cmake-3.8.1-Linux-x86_64/bin:$PATH
   - ccache -z -M 100M
   - cmake --version
 script: rake
