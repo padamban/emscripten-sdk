@@ -99,6 +99,8 @@ emscripten-nightly-1.37.2-2017_02_01_23_14.tar.gz
 emscripten-nightly-1.37.2-2017_02_01_20_15.tar.gz
 emscripten-nightly-1.37.2-2017_02_01_05_34.tar.gz
 emscripten-nightly-1.37.2-2017_01_31_17_50.tar.gz
+emscripten-nightly-1.37.12-2017_05_16_16_46.tar.gz
+emscripten-nightly-1.37.12-2017_05_15_17_21.tar.gz
 emscripten-nightly-1.37.12-2017_05_10_01_12.tar.gz
 emscripten-nightly-1.37.12-2017_05_10_01_10.tar.gz
 emscripten-nightly-1.37.12-2017_05_09_12_14.tar.gz
