@@ -1,13 +1,24 @@
+from __future__ import print_function
 import multiprocessing
 import os
-import pickle
-import Queue
 import subprocess
 import sys
-import time
-import traceback
 import unittest
 
+try:
+  import queue
+except ImportError:
+  # Python 2 compatibility
+  import Queue as queue
+
+def g_testing_thread(work_queue, result_queue):
+  for test in iter(lambda: get_from_queue(work_queue), None):
+    result = BufferedParallelTestResult()
+    try:
+      test(result)
+    except Exception as e:
+      result.addError(test, e)
+    result_queue.put(result)
 
 class ParallelTestSuite(unittest.BaseTestSuite):
   """Runs a suite of tests in parallel.
@@ -45,27 +56,17 @@ class ParallelTestSuite(unittest.BaseTestSuite):
     tests = []
     for test in self:
       tests.append(test)
-    tests.sort(key=lambda test: str(test))
+    tests.sort(key=str)
     return tests[::-1]
 
   def init_processes(self, test_queue):
     self.processes = []
     self.result_queue = multiprocessing.Queue()
-    for i in xrange(num_cores()):
-      p = multiprocessing.Process(target=self.testing_thread,
+    for i in range(num_cores()):
+      p = multiprocessing.Process(target=g_testing_thread,
                                   args=(test_queue, self.result_queue))
       p.start()
       self.processes.append(p)
-
-  @staticmethod
-  def testing_thread(work_queue, result_queue):
-    for test in iter(lambda: get_from_queue(work_queue), None):
-      result = BufferedParallelTestResult()
-      try:
-        test(result)
-      except Exception as e:
-        result.addError(test, e)
-      result_queue.put(result)
 
   def collect_results(self):
     buffered_results = []
@@ -78,12 +79,12 @@ class ParallelTestSuite(unittest.BaseTestSuite):
     return buffered_results
 
   def clear_finished_processes(self):
-    self.processes = filter(lambda p: p.is_alive(), self.processes)
+    self.processes = [p for p in self.processes if p.is_alive()]
 
   def combine_results(self, result, buffered_results):
-    print
-    print 'DONE: combining results on main thread'
-    print
+    print()
+    print('DONE: combining results on main thread')
+    print()
     # Sort the results back into alphabetical order. Running the tests in
     # parallel causes mis-orderings, this makes the results more readable.
     results = sorted(buffered_results, key=lambda res:str(res.test))
@@ -115,15 +116,15 @@ class BufferedParallelTestResult(object):
     pass
 
   def addSuccess(self, test):
-    print >> sys.stderr, test, '... ok'
+    print(test, '... ok', file=sys.stderr)
     self.buffered_result = BufferedTestSuccess(test)
 
   def addFailure(self, test, err):
-    print >> sys.stderr, test, '... FAIL'
+    print(test, '... FAIL', file=sys.stderr)
     self.buffered_result = BufferedTestFailure(test, err)
 
   def addError(self, test, err):
-    print >> sys.stderr, test, '... ERROR'
+    print(test, '... ERROR', file=sys.stderr)
     self.buffered_result = BufferedTestError(test, err)
 
 
@@ -193,9 +194,9 @@ def num_cores():
   return multiprocessing.cpu_count()
 
 
-def get_from_queue(queue):
+def get_from_queue(q):
   try:
-    return queue.get(True, 0.1)
-  except Queue.Empty:
+    return q.get(True, 0.1)
+  except queue.Empty:
     pass
   return None

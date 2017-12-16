@@ -4,7 +4,9 @@
 Module['asm'] = asm;
 
 {{{ maybeExport('FS') }}}
+{{{ maybeExport('GL') }}}
 
+#if MEM_INIT_IN_WASM == 0
 #if MEM_INIT_METHOD == 2
 #if USE_PTHREADS
 if (memoryInitializer && !ENVIRONMENT_IS_PTHREAD) (function(s) {
@@ -33,7 +35,6 @@ if (memoryInitializer) (function(s) {
   }
 })(memoryInitializer);
 #else
-#if MEM_INIT_METHOD == 1
 #if USE_PTHREADS
 if (memoryInitializer && !ENVIRONMENT_IS_PTHREAD) {
 #else
@@ -68,19 +69,35 @@ if (memoryInitializer) {
         throw 'could not load memory initializer ' + memoryInitializer;
       });
     }
+#if SUPPORT_BASE64_EMBEDDING
+    var memoryInitializerBytes = tryParseAsDataURI(memoryInitializer);
+    if (memoryInitializerBytes) {
+      applyMemoryInitializer(memoryInitializerBytes.buffer);
+    } else
+#endif
     if (Module['memoryInitializerRequest']) {
       // a network request has already been created, just use that
       function useRequest() {
         var request = Module['memoryInitializerRequest'];
+        var response = request.response;
         if (request.status !== 200 && request.status !== 0) {
-          // If you see this warning, the issue may be that you are using locateFile or memoryInitializerPrefixURL, and defining them in JS. That
-          // means that the HTML file doesn't know about them, and when it tries to create the mem init request early, does it to the wrong place.
-          // Look in your browser's devtools network console to see what's going on.
-          console.warn('a problem seems to have happened with Module.memoryInitializerRequest, status: ' + request.status + ', retrying ' + memoryInitializer);
-          doBrowserLoad();
-          return;
+#if SUPPORT_BASE64_EMBEDDING
+          var data = tryParseAsDataURI(Module['memoryInitializerRequestURL']);
+          if (data) {
+            response = data.buffer;
+          } else {
+#endif
+            // If you see this warning, the issue may be that you are using locateFile or memoryInitializerPrefixURL, and defining them in JS. That
+            // means that the HTML file doesn't know about them, and when it tries to create the mem init request early, does it to the wrong place.
+            // Look in your browser's devtools network console to see what's going on.
+            console.warn('a problem seems to have happened with Module.memoryInitializerRequest, status: ' + request.status + ', retrying ' + memoryInitializer);
+            doBrowserLoad();
+            return;
+#if SUPPORT_BASE64_EMBEDDING
+          }
+#endif
         }
-        applyMemoryInitializer(request.response);
+        applyMemoryInitializer(response);
       }
       if (Module['memoryInitializerRequest'].response) {
         setTimeout(useRequest, 0); // it's already here; but, apply it asynchronously
@@ -94,7 +111,7 @@ if (memoryInitializer) {
   }
 }
 #endif
-#endif
+#endif // MEM_INIT_IN_WASM == 0
 
 #if CYBERDWARF
   Module['cyberdwarf'] = _cyberdwarf_Debugger(cyberDWARFFile);
@@ -128,6 +145,7 @@ Module['then'] = function(func) {
 /**
  * @constructor
  * @extends {Error}
+ * @this {ExitStatus}
  */
 function ExitStatus(status) {
   this.name = "ExitStatus";
@@ -147,7 +165,8 @@ dependenciesFulfilled = function runCaller() {
   if (!Module['calledRun']) dependenciesFulfilled = runCaller; // try this again later, after new deps are fulfilled
 }
 
-Module['callMain'] = Module.callMain = function callMain(args) {
+#if HAS_MAIN
+Module['callMain'] = function callMain(args) {
 #if ASSERTIONS
   assert(runDependencies == 0, 'cannot call main when async dependencies remain! (listen on __ATMAIN__)');
   assert(__ATPRERUN__.length == 0, 'cannot call main when preRun functions remain to be called');
@@ -173,7 +192,7 @@ Module['callMain'] = Module.callMain = function callMain(args) {
   argv = allocate(argv, 'i32', ALLOC_NORMAL);
 
 #if EMTERPRETIFY_ASYNC
-  var initialEmtStackTop = Module['asm'].emtStackSave();
+  var initialEmtStackTop = Module['asm']['emtStackSave']();
 #endif
 
   try {
@@ -181,7 +200,13 @@ Module['callMain'] = Module.callMain = function callMain(args) {
     var start = Date.now();
 #endif
 
+#if PROXY_TO_PTHREAD
+    // User requested the PROXY_TO_PTHREAD option, so call a stub main which pthread_create()s a new thread
+    // that will call the user's real main() for the application.
+    var ret = Module['_proxy_main'](argc, argv, 0);
+#else
     var ret = Module['_main'](argc, argv, 0);
+#endif
 
 #if BENCHMARK
     Module.realPrint('main() took ' + (Date.now() - start) + ' milliseconds');
@@ -215,6 +240,7 @@ Module['callMain'] = Module.callMain = function callMain(args) {
     calledMain = true;
   }
 }
+#endif // HAS_MAIN
 
 {{GLOBAL_VARS}}
 
@@ -258,7 +284,13 @@ function run(args) {
 
     if (Module['onRuntimeInitialized']) Module['onRuntimeInitialized']();
 
+#if HAS_MAIN
     if (Module['_main'] && shouldRunNow) Module['callMain'](args);
+#else
+#if ASSERTIONS
+    assert(!Module['_main'], 'compiled without a main, but one is present. if you added it from JS, use Module["onRuntimeInitialized"]');
+#endif // ASSERTIONS
+#endif // HAS_MAIN
 
     postRun();
   }
@@ -278,7 +310,7 @@ function run(args) {
   checkStackCookie();
 #endif
 }
-Module['run'] = Module.run = run;
+Module['run'] = run;
 
 function exit(status, implicit) {
   if (implicit && Module['noExitRuntime']) {
@@ -311,11 +343,15 @@ function exit(status, implicit) {
   }
   Module['quit'](status, new ExitStatus(status));
 }
-Module['exit'] = Module.exit = exit;
+Module['exit'] = exit;
 
 var abortDecorators = [];
 
 function abort(what) {
+  if (Module['onAbort']) {
+    Module['onAbort'](what);
+  }
+
 #if USE_PTHREADS
   if (ENVIRONMENT_IS_PTHREAD) console.error('Pthread aborting at ' + new Error().stack);
 #endif
@@ -344,7 +380,7 @@ function abort(what) {
   }
   throw output;
 }
-Module['abort'] = Module.abort = abort;
+Module['abort'] = abort;
 
 // {{PRE_RUN_ADDITIONS}}
 
@@ -355,6 +391,7 @@ if (Module['preInit']) {
   }
 }
 
+#if HAS_MAIN
 // shouldRunNow refers to calling main(), not run().
 #if INVOKE_RUN
 var shouldRunNow = true;
@@ -364,6 +401,7 @@ var shouldRunNow = false;
 if (Module['noInitialRun']) {
   shouldRunNow = false;
 }
+#endif // HAS_MAIN
 
 #if NO_EXIT_RUNTIME
 Module["noExitRuntime"] = true;

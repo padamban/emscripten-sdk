@@ -28,42 +28,54 @@ Defines
 	
 	This allows you to declare JavaScript in your C code "inline", which is then executed when your compiled code is run in the browser. For example, the following C code would display two alerts if it was compiled with Emscripten and run in the browser: ::
 
-		EM_ASM( alert(‘hai’)); 
-		alert(‘bai’)); )
-   
-	.. note:: 
-		- Double-quotes (") cannot be used in the inline assembly/JavaScript. Single-quotes (‘) can be used, as shown above.
-		- Newlines (\\n, \\r etc.) are supported in the inline JavaScript. Note that any platform-specific issues with line endings in normal JavaScript also apply to inline JavaScript declared using ``EM_ASM``.
-		- You can’t access C variables with :c:macro:`EM_ASM`, nor receive a value back. Instead use :c:macro:`EM_ASM_ARGS`, :c:macro:`EM_ASM_INT`, or :c:macro:`EM_ASM_DOUBLE`.
-		- As of ``1.30.4``, ``EM_ASM`` contents appear as normal JS, outside of the compiled code. Previously we had them as a string that was ``eval``ed. The newer approach avoids the overhead of ``eval``, and also allows for better optimization of ``EM_ASM`` contents by things like closure compiler, as their contents are now visible. Note that this means that closure compiler will optimize them as if they were written together with the rest of the codebase, which is a change from before - you may need to use safety quotes in some places (``a['b']`` instead of ``a.b``).
-   
-	
-.. c:macro:: EM_ASM_(code, ...)
-	EM_ASM_ARGS(code, ...) 
-	EM_ASM_INT(code, ...)
-	EM_ASM_DOUBLE(code, ...)
-	EM_ASM_INT_V(code) 
-	EM_ASM_DOUBLE_V(code) 
-	
-	Input-output versions of EM_ASM.
- 	
-	:c:macro:`EM_ASM_` (an extra "_" is added) or :c:macro:`EM_ASM_ARGS` allow values (``int`` or ``double``) to be sent into the code.
+		EM_ASM(alert('hai'); alert('bai'));
 
-	.. note:: The C preprocessor does not have a full understanding of JavaScript tokens, of course. An issue you might see is that it is not aware of nesting due to ``{`` or ``[``, it is only aware of ``,`` and ``(``. As a result, if you have a JavaScript array ``[1,2,3]`` then you might get an error, but can fix things with parentheses: ``([1,2,3])``.
+	Arguments can be passed inside the JavaScript code block, where they arrive as variables ``$0``, ``$1`` etc. These arguments can either be of type ``int32_t`` or ``double``. ::
 
-	If you also want a return value, :c:macro:`EM_ASM_INT` receives arguments (of ``int`` or ``double`` type) and returns an ``int``; :c:macro:`EM_ASM_DOUBLE` does the same and returns a ``double``.
-	
-	Arguments arrive as ``$0``, ``$1`` etc. The output value should be returned: ::
-
-		int x = EM_ASM_INT({
+		EM_ASM({
 		  console.log('I received: ' + [$0, $1]);
-		  return $0 + $1;
-		}, calc(), otherCalc());
+		}, 100, 35.5);
 
 	Note the ``{`` and ``}``.
-	
-	If you just want to receive an output value (``int`` or ``double``) but not pass any values, you can use :c:macro:`EM_ASM_INT_V` or :c:macro:`EM_ASM_DOUBLE_V`, respectively.
 
+    Null-terminated C strings can also be passed into ``EM_ASM`` blocks, but to operate on them, they need to be copied out from the heap to convert to high-level JavaScript strings. ::
+
+		EM_ASM(console.log('hello ' + UTF8ToString($0)), "world!");
+
+    In the same manner, pointers to any type (including ``void *``) can be passed inside ``EM_ASM`` code, where they appear as integers like ``char *`` pointers above did. Accessing the data can be managed by reading the heap directly. ::
+
+		int arr[2] = { 30, 45 };
+		EM_ASM({
+		  console.log('Data: ' + HEAP32[$0>>2] + ', ' + HEAP32[($0+4)>>2]);
+		}, arr);
+
+	.. note:: 
+		- As of Emscripten ``1.30.4``, the contents of ``EM_ASM`` code blocks appear inside the normal JS file, and as result, Closure compiler and other JavaScript minifiers will be able to operate on them. You may need to use safety quotes in some places (``a['b']`` instead of ``a.b``) to avoid minification fro occurring.
+		- The C preprocessor does not have an understanding of JavaScript tokens, and as a result, if the ``code`` block contains a comma character ``,``, it may be necessary to wrap the code block inside parentheses. For example, code ``EM_ASM(return [1,2,3].length);`` will not compile, but ``EM_ASM((return [1,2,3].length));`` does.
+
+
+.. c:macro:: EM_ASM_INT(code, ...)
+	EM_ASM_DOUBLE(code, ...)
+	
+	These two functions behave like EM_ASM, but in addition they also return a value back to C code. The output value is passed back with a ``return`` statement: ::
+
+		int x = EM_ASM_INT({
+		  return $0 + 42;
+		}, 100);
+
+		int y = EM_ASM_INT(return TOTAL_MEMORY);
+
+    Strings can be returned back to C from JavaScript, but one needs to be careful about memory management. ::
+
+		char *str = (char*)EM_ASM_INT({
+			var jsString = 'Hello with some exotic Unicode characters: Tässä on yksi lumiukko: ☃, ole hyvä.';
+			var lengthBytes = lengthBytesUTF8(jsString)+1; // 'jsString.length' would return the length of the string as UTF-16 units, but Emscripten C strings operate as UTF-8.
+			var stringOnWasmHeap = _malloc(lengthBytes);
+			stringToUTF8(jsString, stringOnWasmHeap, lengthBytes+1);
+			return stringOnWasmHeap;
+		});
+		printf("UTF8 string says: %s\n", str);
+		free(str); // Each call to _malloc() must be paired with free(), or heap memory will leak!
 
 
 Calling JavaScript From C/C++
@@ -114,6 +126,8 @@ Functions
 
 	Interface to the underlying JavaScript engine. This function will ``eval()`` the given script. Note: If -s NO_DYNAMIC_EXECUTION=1 is set, this function will not be available.
 
+	This function can be called from a pthread, and it is executed in the scope of the Web Worker that is hosting the pthread. To evaluate a function in the scope of the main runtime thread, see the function emscripten_sync_run_in_main_runtime_thread().
+
 	:param script: The script to evaluate.
 	:type script: const char* 
 	:rtype: void
@@ -122,6 +136,8 @@ Functions
 .. c:function:: int emscripten_run_script_int(const char *script)
 
 	Interface to the underlying JavaScript engine. This function will ``eval()`` the given script. Note: If -s NO_DYNAMIC_EXECUTION=1 is set, this function will not be available.
+
+	This function can be called from a pthread, and it is executed in the scope of the Web Worker that is hosting the pthread. To evaluate a function in the scope of the main runtime thread, see the function emscripten_sync_run_in_main_runtime_thread().
 
 	:param script: The script to evaluate.
 	:type script: const char* 
@@ -133,6 +149,8 @@ Functions
 
 	Interface to the underlying JavaScript engine. This function will ``eval()`` the given script. Note that this overload uses a single buffer shared between calls. Note: If -s NO_DYNAMIC_EXECUTION=1 is set, this function will not be available.
 
+	This function can be called from a pthread, and it is executed in the scope of the Web Worker that is hosting the pthread. To evaluate a function in the scope of the main runtime thread, see the function emscripten_sync_run_in_main_runtime_thread().
+
 	:param script: The script to evaluate.
 	:type script: const char* 
 	:return: The result of the evaluation, as a string.
@@ -142,6 +160,8 @@ Functions
 .. c:function:: void emscripten_async_run_script(const char *script, int millis) 
 
 	Asynchronously run a script, after a specified amount of time.
+
+	This function can be called from a pthread, and it is executed in the scope of the Web Worker that is hosting the pthread. To evaluate a function in the scope of the main runtime thread, see the function emscripten_sync_run_in_main_runtime_thread().
 
 	:param script: The script to evaluate.
 	:type script: const char* 
@@ -154,6 +174,8 @@ Functions
 	Asynchronously loads a script from a URL.
 	
 	This integrates with the run dependencies system, so your script can call ``addRunDependency`` multiple times, prepare various asynchronous tasks, and call ``removeRunDependency`` on them; when all are complete (or if there were no run dependencies to begin with), ``onload`` is called. An example use for this is to load an asset module, that is, the output of the file packager.
+
+	This function is currently only available in main browser thread, and it will immediately fail by calling the supplied onerror() handler if called in a pthread.
 
 	:param script: The script to evaluate.
 	:type script: const char* 
@@ -175,28 +197,32 @@ Functions
    
 .. c:function:: void emscripten_set_main_loop(em_callback_func func, int fps, int simulate_infinite_loop)
 
-	Set a C function as the main event loop.
+	Set a C function as the main event loop for the calling thread.
 	
 	If the main loop function needs to receive user-defined data, use :c:func:`emscripten_set_main_loop_arg` instead.
 
-	The JavaScript environment will call that function at a specified number of frames per second. Setting 0 or a negative value as the ``fps`` will instead use the browser’s ``requestAnimationFrame`` mechanism to call the main loop function. This is **HIGHLY** recommended if you are doing rendering, as the browser’s ``requestAnimationFrame`` will make sure you render at a proper smooth rate that lines up properly with the browser and monitor. If you do not render at all in your application, then you should pick a specific frame rate that makes sense for your code.
+	The JavaScript environment will call that function at a specified number of frames per second. If called on the main browser thread, setting 0 or a negative value as the ``fps`` will use the browser’s ``requestAnimationFrame`` mechanism to call the main loop function. This is **HIGHLY** recommended if you are doing rendering, as the browser’s ``requestAnimationFrame`` will make sure you render at a proper smooth rate that lines up properly with the browser and monitor. If you do not render at all in your application, then you should pick a specific frame rate that makes sense for your code.
 	
 	If ``simulate_infinite_loop`` is true, the function will throw an exception in order to stop execution of the caller. This will lead to the main loop being entered instead of code after the call to :c:func:`emscripten_set_main_loop` being run, which is the closest we can get to simulating an infinite loop (we do something similar in `glutMainLoop <https://github.com/kripken/emscripten/blob/1.29.12/system/include/GL/freeglut_std.h#L400>`_ in `GLUT <http://www.opengl.org/resources/libraries/glut/>`_). If this parameter is ``false``, then the behavior is the same as it was before this parameter was added to the API, which is that execution continues normally. Note that in both cases we do not run global destructors, ``atexit``, etc., since we know the main loop will still be running, but if we do not simulate an infinite loop then the stack will be unwound. That means that if ``simulate_infinite_loop`` is ``false``, and you created an object on the stack, it will be cleaned up before the main loop is called for the first time.
 	
-	.. tip:: There can be only *one* main loop function at a time. To change the main loop function, first :c:func:`cancel <emscripten_cancel_main_loop>` the current loop, and then call this function to set another.
-	
-	.. note:: See :c:func:`emscripten_set_main_loop_expected_blockers`, :c:func:`emscripten_pause_main_loop`, :c:func:`emscripten_resume_main_loop` and :c:func:`emscripten_cancel_main_loop` for information about blocking, pausing, and resuming the main loop.
+	This function can be called in a pthread, in which case the callback loop will be set up to be called in the context of the calling thread. In order for the loop to work, the calling thread must regularly "yield back" to the browser by exiting from its pthread main function, since the callback will be able to execute only when the calling thread is not executing any other code. This means that running a synchronously blocking main loop is not compatible with the emscripten_set_main_loop() function.
 
-	.. note:: Calling this function overrides the effect of any previous calls to :c:func:`emscripten_set_main_loop_timing` by applying the timing mode specified by the parameter ``fps``. To specify a different timing mode, call the function :c:func:`emscripten_set_main_loop_timing` after setting up the main loop.
+	Since ``requestAnimationFrame()`` API is not available in web workers, when called ``emscripten_set_main_loop()`` in a pthread with ``fps`` <= 0, the effect of syncing up to the display's refresh rate is emulated, and generally will not precisely line up with vsync intervals.
+
+	.. tip:: There can be only *one* main loop function at a time, per thread. To change the main loop function, first :c:func:`cancel <emscripten_cancel_main_loop>` the current loop, and then call this function to set another.
 	
-	:param em_callback_func func: C function to set as main event loop.
+	.. note:: See :c:func:`emscripten_set_main_loop_expected_blockers`, :c:func:`emscripten_pause_main_loop`, :c:func:`emscripten_resume_main_loop` and :c:func:`emscripten_cancel_main_loop` for information about blocking, pausing, and resuming the main loop of the calling thread.
+
+	.. note:: Calling this function overrides the effect of any previous calls to :c:func:`emscripten_set_main_loop_timing` in the calling thread by applying the timing mode specified by the parameter ``fps``. To specify a different timing mode for the current thread, call the function :c:func:`emscripten_set_main_loop_timing` after setting up the main loop.
+	
+	:param em_callback_func func: C function to set as main event loop for the calling thread.
 	:param int fps: Number of frames per second that the JavaScript will call the function. Setting ``int <=0`` (recommended) uses the browser’s ``requestAnimationFrame`` mechanism to call the function.	
 	:param int simulate_infinite_loop: If true, this function will throw an exception in order to stop execution of the caller. 
 
 
 .. c:function:: void emscripten_set_main_loop_arg(em_arg_callback_func func, void *arg, int fps, int simulate_infinite_loop)
 
-	Set a C function as the main event loop, passing it user-defined data.
+	Set a C function as the main event loop for the calling thread, passing it user-defined data.
 	
 	.. seealso:: The information in :c:func:`emscripten_set_main_loop` also applies to this function.
 
@@ -209,7 +235,7 @@ Functions
 .. c:function:: void emscripten_push_main_loop_blocker(em_arg_callback_func func, void *arg)
 	void emscripten_push_uncounted_main_loop_blocker(em_arg_callback_func func, void *arg)
 	
-	Add a function that **blocks** the main loop.
+	Add a function that **blocks** the main loop for the calling thread.
 
 	The function is added to the back of a queue of events to be blocked; the main loop will not run until all blockers in the queue complete.
 	
@@ -227,7 +253,7 @@ Functions
 .. c:function:: void emscripten_pause_main_loop(void)
 				  void emscripten_resume_main_loop(void)
 
-	Pause and resume the main loop.
+	Pause and resume the main loop for the calling thread.
 
 	Pausing and resuming the main loop is useful if your app needs to perform some synchronous operation, for example to load a file from the network. It might be wrong to run the main loop before that finishes (the original code assumes that), so you can break the code up into asynchronous callbacks, but you must pause the main loop until they complete.
 	
@@ -237,13 +263,13 @@ Functions
 
 .. c:function:: void emscripten_cancel_main_loop(void)
 
-	Cancels the main event loop. 
+	Cancels the main event loop for the calling thread. 
 	
 	See also :c:func:`emscripten_set_main_loop` and :c:func:`emscripten_set_main_loop_arg` for information about setting and using the main loop. 
 
 .. c:function:: int emscripten_set_main_loop_timing(int mode, int value)
 
-	Specifies the scheduling mode that the current main loop tick function will be called with.
+	Specifies the scheduling mode that the main loop tick function of the calling thread will be called with.
 
 	This function can be used to interactively control the rate at which Emscripten runtime drives the main loop specified by calling the function :c:func:`emscripten_set_main_loop`. In native development, this corresponds with the "swap interval" or the "presentation interval" for 3D rendering. The new tick interval specified by this function takes effect immediately on the existing main loop, and this function must be called only after setting up a main loop via :c:func:`emscripten_set_main_loop`.
 

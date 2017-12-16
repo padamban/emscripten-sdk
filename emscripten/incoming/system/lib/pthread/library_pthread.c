@@ -111,7 +111,7 @@ void __pthread_testcancel()
 	struct pthread *self = pthread_self();
 	if (self->canceldisable) return;
 	if (_pthread_isduecanceled(self)) {
-		EM_ASM( throw 'Canceled!'; );
+		EM_ASM(throw 'Canceled!');
 	}
 }
 
@@ -167,8 +167,12 @@ int usleep(unsigned usec)
 static em_queued_call *em_queued_call_malloc()
 {
 	em_queued_call *call = (em_queued_call*)malloc(sizeof(em_queued_call));
-	call->operationDone = 0;
-	call->functionPtr = 0;
+	assert(call); // Not a programming error, but use assert() in debug builds to catch OOM scenarios.
+	if (call)
+	{
+		call->operationDone = 0;
+		call->functionPtr = 0;
+	}
 	return call;
 }
 static void em_queued_call_free(em_queued_call *call)
@@ -185,19 +189,6 @@ static void _do_call(em_queued_call *q)
 {
 	switch(q->functionEnum)
 	{
-		case EM_PROXIED_UTIME: q->returnValue.i = utime(q->args[0].cp, (struct utimbuf*)q->args[1].vp); break;
-		case EM_PROXIED_UTIMES: q->returnValue.i = utimes(q->args[0].cp, (struct timeval*)q->args[1].vp); break;
-		case EM_PROXIED_CHROOT: q->returnValue.i = chroot(q->args[0].cp); break;
-		case EM_PROXIED_FPATHCONF: q->returnValue.i = fpathconf(q->args[0].i, q->args[1].i); break;
-		case EM_PROXIED_CONFSTR: q->returnValue.i = confstr(q->args[0].i, q->args[1].cp, q->args[2].i); break;
-		case EM_PROXIED_SYSCONF: q->returnValue.i = sysconf(q->args[0].i); break;
-		case EM_PROXIED_ATEXIT: q->returnValue.i = atexit(q->args[0].vp); break;
-		case EM_PROXIED_GETENV: q->returnValue.cp = getenv(q->args[0].cp); break;
-		case EM_PROXIED_CLEARENV: q->returnValue.i = clearenv(); break;
-		case EM_PROXIED_SETENV: q->returnValue.i = setenv(q->args[0].cp, q->args[1].cp, q->args[2].i); break;
-		case EM_PROXIED_UNSETENV: q->returnValue.i = unsetenv(q->args[0].cp); break;
-		case EM_PROXIED_PUTENV: q->returnValue.i = putenv(q->args[0].cp); break;
-		case EM_PROXIED_TZSET: tzset(); break;
 		case EM_PROXIED_PTHREAD_CREATE: q->returnValue.i = pthread_create(q->args[0].vp, q->args[1].vp, q->args[2].vp, q->args[3].vp); break;
 		case EM_PROXIED_SYSCALL: q->returnValue.i = emscripten_syscall(q->args[0].i, q->args[1].vp); break;
 		case EM_FUNC_SIG_V: ((em_func_v)q->functionPtr)(); break;
@@ -454,10 +445,11 @@ void EMSCRIPTEN_KEEPALIVE emscripten_main_thread_process_queued_calls()
 
 int emscripten_sync_run_in_main_runtime_thread_(EM_FUNC_SIGNATURE sig, void *func_ptr, ...)
 {
-	va_list args;
-	va_start(args, func_ptr);
 	int numArguments = EM_FUNC_SIG_NUM_FUNC_ARGUMENTS(sig);
 	em_queued_call q = { sig, func_ptr };
+
+	va_list args;
+	va_start(args, func_ptr);
 	for(int i = 0; i < numArguments; ++i)
 		q.args[i].i = va_arg(args, int);
 	va_end(args);
@@ -467,12 +459,14 @@ int emscripten_sync_run_in_main_runtime_thread_(EM_FUNC_SIGNATURE sig, void *fun
 
 void emscripten_async_run_in_main_runtime_thread_(EM_FUNC_SIGNATURE sig, void *func_ptr, ...)
 {
-	va_list args;
-	va_start(args, func_ptr);
 	int numArguments = EM_FUNC_SIG_NUM_FUNC_ARGUMENTS(sig);
 	em_queued_call *q = em_queued_call_malloc();
+	if (!q) return;
 	q->functionEnum = sig;
 	q->functionPtr = func_ptr;
+
+	va_list args;
+	va_start(args, func_ptr);
 	for(int i = 0; i < numArguments; ++i)
 		q->args[i].i = va_arg(args, int);
 	va_end(args);
@@ -484,12 +478,14 @@ void emscripten_async_run_in_main_runtime_thread_(EM_FUNC_SIGNATURE sig, void *f
 
 em_queued_call *emscripten_async_waitable_run_in_main_runtime_thread_(EM_FUNC_SIGNATURE sig, void *func_ptr, ...)
 {
-	va_list args;
-	va_start(args, func_ptr);
 	int numArguments = EM_FUNC_SIG_NUM_FUNC_ARGUMENTS(sig);
 	em_queued_call *q = em_queued_call_malloc();
+	if (!q) return;
 	q->functionEnum = sig;
 	q->functionPtr = func_ptr;
+
+	va_list args;
+	va_start(args, func_ptr);
 	for(int i = 0; i < numArguments; ++i)
 		q->args[i].i = va_arg(args, int);
 	va_end(args);
@@ -516,16 +512,6 @@ float EMSCRIPTEN_KEEPALIVE emscripten_atomic_load_f32(const void *addr)
 // which this emulation can be removed.
 #define NUM_64BIT_LOCKS 256
 static int emulated64BitAtomicsLocks[NUM_64BIT_LOCKS] = {};
-
-uint32_t EMSCRIPTEN_KEEPALIVE emscripten_atomic_exchange_u32(void/*uint32_t*/ *addr, uint32_t newVal)
-{
-	uint32_t oldVal, oldVal2;
-	do {
-		oldVal = emscripten_atomic_load_u32(addr);
-		oldVal2 = emscripten_atomic_cas_u32(addr, oldVal, newVal);
-	} while (oldVal != oldVal2);
-	return oldVal;
-}
 
 #define SPINLOCK_ACQUIRE(addr) do { while(emscripten_atomic_exchange_u32((void*)(addr), 1)) /*nop*/; } while(0)
 #define SPINLOCK_RELEASE(addr) emscripten_atomic_store_u32((void*)(addr), 0)
@@ -762,6 +748,63 @@ uint64_t __atomic_fetch_or_8(void *ptr, uint64_t value, int memmodel)
 uint64_t __atomic_fetch_xor_8(void *ptr, uint64_t value, int memmodel)
 {
 	return _emscripten_atomic_fetch_and_xor_u64(ptr, value);
+}
+
+typedef struct main_args
+{
+  int argc;
+  char **argv;
+} main_args;
+
+extern int __call_main(int argc, char **argv);
+
+void *__emscripten_thread_main(void *param)
+{
+  emscripten_set_thread_name(pthread_self(), "Application main thread"); // This is the main runtime thread for the application.
+  main_args *args = (main_args*)param;
+  return (void*)__call_main(args->argc, args->argv);
+}
+
+static volatile main_args _main_arguments;
+
+// TODO: Create a separate library of this to be able to drop EMSCRIPTEN_KEEPALIVE from this definition.
+int EMSCRIPTEN_KEEPALIVE proxy_main(int argc, char **argv)
+{
+  if (emscripten_has_threading_support())
+  {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
+    // TODO: Read this from -s STACK_SIZE parameter, and make actual main browser thread stack something tiny, or create a -s PROXY_THREAD_STACK_SIZE parameter.
+#define EMSCRIPTEN_PTHREAD_STACK_SIZE (128*1024)
+
+    pthread_attr_setstacksize(&attr, (EMSCRIPTEN_PTHREAD_STACK_SIZE));
+    // TODO: Add a -s PROXY_CANVASES_TO_THREAD=parameter or similar to allow configuring this
+#ifdef EMSCRIPTEN_PTHREAD_TRANSFERRED_CANVASES
+    // If user has defined EMSCRIPTEN_PTHREAD_TRANSFERRED_CANVASES, then transfer those canvases over to the pthread.
+    emscripten_pthread_attr_settransferredcanvases(&attr, (EMSCRIPTEN_PTHREAD_TRANSFERRED_CANVASES));
+#else
+    // Otherwise by default, transfer whatever is set to Module.canvas.
+    if (EM_ASM_INT_V({ return !!(Module['canvas']); })) emscripten_pthread_attr_settransferredcanvases(&attr, "#canvas");
+#endif
+    _main_arguments.argc = argc;
+    _main_arguments.argv = argv;
+    pthread_t thread;
+    int rc = pthread_create(&thread, &attr, __emscripten_thread_main, (void*)&_main_arguments);
+    pthread_attr_destroy(&attr);
+    if (rc)
+    {
+      // Proceed by running main() on the main browser thread as a fallback.
+      return __call_main(_main_arguments.argc, _main_arguments.argv);
+    }
+    EM_ASM(Module['noExitRuntime'] = true);
+    return 0;
+  }
+  else
+  {
+    return __call_main(_main_arguments.argc, _main_arguments.argv);
+  }
 }
 
 weak_alias(__pthread_testcancel, pthread_testcancel);

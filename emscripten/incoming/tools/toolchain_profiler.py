@@ -1,8 +1,8 @@
 import subprocess, os, time, sys, tempfile
-if sys.version_info.major == 2:
-  import response_file
-else:
-  from tools import response_file
+
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tools import response_file
 
 EM_PROFILE_TOOLCHAIN = int(os.getenv('EM_PROFILE_TOOLCHAIN')) if os.getenv('EM_PROFILE_TOOLCHAIN') != None else 0
 
@@ -50,7 +50,7 @@ if EM_PROFILE_TOOLCHAIN:
     ToolchainProfiler.record_subprocess_finish(pid, 0)
     return ret
 
-  class ProfiledPopen:
+  class ProfiledPopen(object):
     def __init__(self, args, bufsize=0, executable=None, stdin=None, stdout=None, stderr=None, preexec_fn=None, close_fds=False,
                  shell=False, cwd=None, env=None, universal_newlines=False, startupinfo=None, creationflags=0):
       self.process = original_Popen(args, bufsize, executable, stdin, stdout, stderr, preexec_fn, close_fds, shell, cwd, env, universal_newlines, startupinfo, creationflags)
@@ -79,7 +79,7 @@ if EM_PROFILE_TOOLCHAIN:
   subprocess.check_output = profiled_check_output
   subprocess.Popen = ProfiledPopen
 
-  class ToolchainProfiler:
+  class ToolchainProfiler(object):
     # Provide a running counter towards negative numbers for PIDs for which we don't know what the actual process ID is
     imaginary_pid_ = 0
     profiler_logs_path = None # Log file not opened yet
@@ -165,7 +165,7 @@ if EM_PROFILE_TOOLCHAIN:
 
     @staticmethod
     def remove_last_occurrence_if_exists(lst, item):
-      for i in xrange(len(lst)):
+      for i in range(len(lst)):
         if lst[i] == item:
           lst.pop(i)
           return True
@@ -182,7 +182,7 @@ if EM_PROFILE_TOOLCHAIN:
       for b in ToolchainProfiler.block_stack[::-1]:
         ToolchainProfiler.exit_block(b)
 
-    class ProfileBlock:
+    class ProfileBlock(object):
       def __init__(self, block_name):
         self.block_name = block_name
 
@@ -204,7 +204,7 @@ if EM_PROFILE_TOOLCHAIN:
 else:
   exit = sys.exit
 
-  class ToolchainProfiler:
+  class ToolchainProfiler(object):
     @staticmethod
     def record_process_start():
       pass
@@ -233,7 +233,7 @@ else:
     def exit_block(block_name):
       pass
 
-    class ProfileBlock:
+    class ProfileBlock(object):
       def __init__(self, block_name):
         pass
       def __enter__(self):

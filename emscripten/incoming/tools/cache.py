@@ -1,9 +1,10 @@
-from toolchain_profiler import ToolchainProfiler
+from __future__ import print_function
+from .toolchain_profiler import ToolchainProfiler
 import os.path, sys, shutil, time, logging
-import tempfiles, filelock
+from . import tempfiles, filelock
 
 # Permanent cache for dlmalloc and stdlibc++
-class Cache:
+class Cache(object):
 
   # If EM_EXCLUSIVE_CACHE_ACCESS is true, this process is allowed to have direct access to
   # the Emscripten cache without having to obtain an interprocess lock for it. Generally this
@@ -28,7 +29,7 @@ class Cache:
     self.filelock = filelock.FileLock(self.filelock_name)
 
     if use_subdir:
-      if os.environ.get('EMCC_WASM_BACKEND') and os.environ.get('EMCC_WASM_BACKEND') != '0':
+      if shared.Settings.WASM_BACKEND:
         dirname = os.path.join(dirname, 'wasm')
       else:
         dirname = os.path.join(dirname, 'asmjs')
@@ -38,7 +39,7 @@ class Cache:
 
   def acquire_cache_lock(self):
     if not self.EM_EXCLUSIVE_CACHE_ACCESS and self.acquired_count == 0:
-      logging.debug('Cache: PID %s acquiring multiprocess file lock to Emscripten cache' % str(os.getpid()))
+      logging.debug('Cache: PID %s acquiring multiprocess file lock to Emscripten cache at %s' % (str(os.getpid()), self.dirname))
       try:
         self.filelock.acquire(60)
       except filelock.Timeout:
@@ -59,7 +60,7 @@ class Cache:
       if self.prev_EM_EXCLUSIVE_CACHE_ACCESS: os.environ['EM_EXCLUSIVE_CACHE_ACCESS'] = self.prev_EM_EXCLUSIVE_CACHE_ACCESS
       else: del os.environ['EM_EXCLUSIVE_CACHE_ACCESS']
       self.filelock.release()
-      logging.debug('Cache: PID %s released multiprocess file lock to Emscripten cache' % str(os.getpid()))
+      logging.debug('Cache: PID %s released multiprocess file lock to Emscripten cache at %s' % (str(os.getpid()), self.dirname))
 
   def ensure(self):
     self.acquire_cache_lock()
@@ -72,8 +73,8 @@ class Cache:
     tempfiles.try_delete(self.dirname)
     try:
       open(self.dirname + '__last_clear', 'w').write('last clear: ' + time.asctime() + '\n')
-    except Exception, e:
-      print >> sys.stderr, 'failed to save last clear time: ', e
+    except Exception as e:
+      print('failed to save last clear time: ', e, file=sys.stderr)
     self.filelock = None
     tempfiles.try_delete(self.filelock_name)
     self.filelock = filelock.FileLock(self.filelock_name)
@@ -129,4 +130,8 @@ def chunkify(funcs, chunk_size, DEBUG=False):
       curr = None
     return [''.join([func[1] for func in chunk]) for chunk in chunks] # remove function names
 
-import shared
+try:
+  from . import shared
+except ImportError:
+  # Python 2 circular import compatibility
+  import shared

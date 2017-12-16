@@ -424,6 +424,8 @@ extern EMSCRIPTEN_RESULT emscripten_webgl_make_context_current(EMSCRIPTEN_WEBGL_
 
 extern EMSCRIPTEN_WEBGL_CONTEXT_HANDLE emscripten_webgl_get_current_context(void);
 
+extern EMSCRIPTEN_RESULT emscripten_webgl_get_drawing_buffer_size(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context, int *width, int *height);
+
 extern EMSCRIPTEN_RESULT emscripten_webgl_destroy_context(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context);
 
 extern EM_BOOL emscripten_webgl_enable_extension(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context, const char *extension);
@@ -435,6 +437,9 @@ extern EMSCRIPTEN_RESULT emscripten_set_webglcontextrestored_callback(const char
 extern EM_BOOL emscripten_is_webgl_context_lost(const char *target);
 
 extern EMSCRIPTEN_RESULT emscripten_webgl_commit_frame();
+
+extern EMSCRIPTEN_RESULT emscripten_set_canvas_element_size(const char *target, int width, int height);
+extern EMSCRIPTEN_RESULT emscripten_get_canvas_element_size(const char *target, int *width, int *height);
 
 extern EMSCRIPTEN_RESULT emscripten_set_element_css_size(const char *target, double width, double height);
 extern EMSCRIPTEN_RESULT emscripten_get_element_css_size(const char *target, double *width, double *height);

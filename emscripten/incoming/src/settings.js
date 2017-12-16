@@ -47,7 +47,7 @@ var INVOKE_RUN = 1; // Whether we will run the main() function. Disable if you e
 var NO_EXIT_RUNTIME = 0; // If set, the runtime is not quit when main() completes (allowing code to
                          // run afterwards, for example from the browser main event loop).
 var MEM_INIT_METHOD = 0; // How to represent the initial memory content.
-                         // 0: keep array literal representing the initial memory data
+                         // 0: embed a base64 string literal representing the initial memory data
                          // 1: create a *.mem file containing the binary data of the initial memory;
                          //    use the --memory-init-file command line switch to select this method
                          // 2: embed a string literal representing that initial memory data
@@ -246,6 +246,7 @@ var SOCKET_WEBRTC = 0; // Select socket backend, either webrtc or websockets. XX
 // settings may configured at run time via the Module object e.g.
 // Module['websocket'] = {subprotocol: 'base64, binary, text'};
 // Module['websocket'] = {url: 'wss://', subprotocol: 'base64'};
+// You can set 'subprotocol' to null, if you don't want to specify it
 // Run time configuration may be useful as it lets an application select multiple different services.
 var WEBSOCKET_URL = 'ws://'; // A string containing either a WebSocket URL prefix (ws:// or wss://) or a complete
                              // RFC 6455 URL - "ws[s]:" "//" host [ ":" port ] path [ "?" query ].
@@ -258,8 +259,8 @@ var WEBSOCKET_SUBPROTOCOL = 'binary'; // A string containing a comma separated l
 var OPENAL_DEBUG = 0; // Print out debugging information from our OpenAL implementation.
 
 var GL_ASSERTIONS = 0; // Adds extra checks for error situations in the GL library. Can impact performance.
-var GL_DEBUG = 0; // Print out all calls into WebGL. As with LIBRARY_DEBUG, you can set a runtime
-                  // option, in this case GL.debug.
+var TRACE_WEBGL_CALLS = 0; // If enabled, prints out all API calls to WebGL contexts. (*very* verbose)
+var GL_DEBUG = 0; // Enables more verbose debug printing of WebGL related operations. As with LIBRARY_DEBUG, this is toggleable at runtime with option GL.debug.
 var GL_TESTING = 0; // When enabled, sets preserveDrawingBuffer in the context, to allow tests to work (but adds overhead)
 var GL_MAX_TEMP_BUFFER_SIZE = 2097152; // How large GL emulation temp buffers are
 var GL_UNSAFE_OPTS = 1; // Enables some potentially-unsafe optimizations in GL emulation code
@@ -285,6 +286,9 @@ var STB_IMAGE = 0; // Enables building of stb-image, a tiny public-domain librar
                    // can be done synchronously, however, it will not be as fast as the browser itself.
                    // When enabled, stb-image will be used automatically from IMG_Load and IMG_Load_RW. You
                    // can also call the stbi_* functions directly yourself.
+
+var LEGACY_VM_SUPPORT = 0; // Enable this to get support for non-modern browsers, node.js, etc. This adds:
+                           //  * Polyfilling for Math.clz32, Math.trunc, Math.imul, Math.fround
 
 var LZ4 = 0; // Enable this to support lz4-compressed file packages. They are stored compressed in memory, and
              // decompressed on the fly, avoiding storing the entire decompressed data in memory at once.
@@ -351,36 +355,12 @@ var EXPORTED_RUNTIME_METHODS = [ // Runtime elements that are exported on Module
   'FS_createDevice',
   'FS_unlink',
   'Runtime',
-  'ccall',
-  'cwrap',
-  'setValue',
-  'getValue',
   'ALLOC_NORMAL',
   'ALLOC_STACK',
   'ALLOC_STATIC',
   'ALLOC_DYNAMIC',
   'ALLOC_NONE',
-  'allocate',
   'getMemory',
-  'Pointer_stringify',
-  'AsciiToString',
-  'stringToAscii',
-  'UTF8ArrayToString',
-  'UTF8ToString',
-  'stringToUTF8Array',
-  'stringToUTF8',
-  'lengthBytesUTF8',
-  'stackTrace',
-  'addOnPreRun',
-  'addOnInit',
-  'addOnPreMain',
-  'addOnExit',
-  'addOnPostRun',
-  'intArrayFromString',
-  'intArrayToString',
-  'writeStringToMemory',
-  'writeArrayToMemory',
-  'writeAsciiToMemory',
   'addRunDependency',
   'removeRunDependency',
 ];
@@ -422,7 +402,7 @@ var EXPORTED_FUNCTIONS = ['_main'];
 var EXPORT_ALL = 0; // If true, we export all the symbols. Note that this does *not* affect LLVM, so it can
                     // still eliminate functions as dead. This just exports them on the Module object.
 var EXPORT_BINDINGS = 0; // Export all bindings generator functions (prefixed with emscripten_bind_). This
-                         // is necessary to use the WebIDL binder or bindings generator with asm.js
+                         // is necessary to use the WebIDL binder with asm.js
 var EXPORT_FUNCTION_TABLES = 0; // If true, export all the functions appearing in a function table, and the
                                 // tables themselves.
 var RETAIN_COMPILER_SETTINGS = 0; // Remembers the values of these settings, and makes them accessible
@@ -435,6 +415,7 @@ var EMSCRIPTEN_VERSION = ''; // this will contain the emscripten version. you sh
                              // RETAIN_COMPILER_SETTINGS
 var OPT_LEVEL = 0;           // this will contain the optimization level (-Ox). you should not modify it.
 var DEBUG_LEVEL = 0;         // this will contain the debug level (-gx). you should not modify it.
+var PROFILING_FUNCS = 0;     // Whether we are profiling functions. you should not modify it.
 
 
 // JS library elements (C functions implemented in JS)
@@ -478,7 +459,7 @@ var MAIN_MODULE = 0; // A main module is a file compiled in a way that allows us
                      //  2: DCE'd main module. We eliminate dead code normally. If a side
                      //     module needs something from main, it is up to you to make sure
                      //     it is kept alive.
-var SIDE_MODULE = 0; // Corresponds to MAIN_MODULE
+var SIDE_MODULE = 0; // Corresponds to MAIN_MODULE (also supports modes 1 and 2)
 
 var RUNTIME_LINKED_LIBS = []; // If this is a main module (MAIN_MODULE == 1), then
                               // we will link these at runtime. They must have been built with
@@ -494,6 +475,11 @@ var PROXY_TO_WORKER = 0; // If set to 1, we build the project into a js file tha
 var PROXY_TO_WORKER_FILENAME = ''; // If set, the script file name the main thread loads.
                                    // Useful if your project doesn't run the main emscripten-
                                    // generated script immediately but does some setup before
+
+var PROXY_TO_PTHREAD = 0; // If set to 1, compiles in a small stub main() in between the real main()
+                          // which calls pthread_create() to run the application main() in a pthread.
+                          // This is something that applications can do manually as well if they wish,
+                          // this option is provided as convenience.
 
 var LINKABLE = 0; // If set to 1, this file can be linked with others, either as a shared
                   // library or as the main file that calls a shared library. To enable that,
@@ -712,9 +698,10 @@ var BINARYEN_TRAP_MODE = "allow"; // How we handle wasm operations that may trap
 var BINARYEN_PASSES = ""; // A comma-separated list of passes to run in the binaryen optimizer,
                           // for example, "dce,precompute,vacuum".
                           // When set, this overrides the default passes we would normally run.
-var BINARYEN_MEM_MAX = -1; // Set the maximum size of memory in the wasm module (in bytes).
-                           // Without this, TOTAL_MEMORY is used (as it is used for the initial value),
-                           // or if memory growth is enabled, no limit is set. This overrides both of those.
+var WASM_MEM_MAX = -1; // Set the maximum size of memory in the wasm module (in bytes).
+                       // Without this, TOTAL_MEMORY is used (as it is used for the initial value),
+                       // or if memory growth is enabled, no limit is set. This overrides both of those.
+                       // (This option was formerly called BINARYEN_MEM_MAX)
 var BINARYEN_ASYNC_COMPILATION = 1; // Whether to compile the wasm asynchronously, which is more
                                     // efficient and does not block the main thread. This is currently
                                     // required for all but the smallest modules to run in V8
@@ -788,6 +775,8 @@ var PTHREAD_HINT_NUM_CORES = 4;
 
 var PTHREADS_PROFILING = 0; // True when building with --threadprofiler
 
+var PTHREADS_DEBUG = 0; // If true, add in debug traces for diagnosing pthreads related issues.
+
 var MAX_GLOBAL_ALIGN = -1; // received from the backend
 
 // Duplicate function elimination. This coalesces function bodies that are
@@ -856,6 +845,23 @@ var FETCH = 0; // If nonzero, enables emscripten_fetch API.
 
 var ASMFS = 0; // If set to 1, uses the multithreaded filesystem that is implemented within the asm.js module, using emscripten_fetch. Implies -s FETCH=1.
 
+var SINGLE_FILE = 0; // If set to 1, embeds all subresources in the emitted file as base64 string
+                     // literals. Embedded subresources may include (but aren't limited to)
+                     // wasm, asm.js, and static memory initialization code.
+                     //
+                     // When using code that depends on this option, your Content Security Policy
+                     // may need to be updated. Specifically, embedding asm.js requires the
+                     // script-src directive to whitelist 'unsafe-inline', and using a Worker
+                     // requires the child-src directive to whitelist blob:. If you aren't using
+                     // Content Security Policy, or your CSP header doesn't include either
+                     // script-src or child-src, then you can safely ignore this warning.
+
 var WASM_TEXT_FILE = ''; // name of the file containing wasm text, if relevant
 var WASM_BINARY_FILE = ''; // name of the file containing wasm binary, if relevant
 var ASMJS_CODE_FILE = ''; // name of the file containing asm.js, if relevant
+var SOURCE_MAP_BASE = ''; // Base URL the source mapfile, if relevant
+
+var MEM_INIT_IN_WASM = 0; // for internal use only
+
+var SUPPORT_BASE64_EMBEDDING = 0; // If set to 1, src/base64Utils.js will be included in the bundle.
+                                  // This is set internally when needed (SINGLE_FILE)

@@ -1,6 +1,6 @@
 import os, shutil, logging
 
-TAG = 'version_32'
+TAG = 'version_40'
 
 def needed(settings, shared, ports):
   if not settings.BINARYEN: return False
@@ -29,9 +29,6 @@ def get(ports, settings, shared):
   return [shared.Cache.get('binaryen_tag_' + TAG, create, what='port', extension='.txt')]
 
 def process_args(ports, args, settings, shared):
-  if not needed(settings, shared, ports):
-    return args
-  get(ports, settings, shared)
   return args
 
 def show():

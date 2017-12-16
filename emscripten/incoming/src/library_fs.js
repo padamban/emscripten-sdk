@@ -1157,7 +1157,7 @@ mergeInto(LibraryManager.library, {
       if ((stream.flags & {{{ cDefine('O_ACCMODE') }}}) === {{{ cDefine('O_RDONLY')}}}) {
         throw new FS.ErrnoError(ERRNO_CODES.EBADF);
       }
-      if (!FS.isFile(stream.node.mode) && !FS.isDir(node.mode)) {
+      if (!FS.isFile(stream.node.mode) && !FS.isDir(stream.node.mode)) {
         throw new FS.ErrnoError(ERRNO_CODES.ENODEV);
       }
       if (!stream.stream_ops.allocate) {
@@ -1278,7 +1278,7 @@ mergeInto(LibraryManager.library, {
         random_device = function() { crypto.getRandomValues(randomBuffer); return randomBuffer[0]; };
       } else if (ENVIRONMENT_IS_NODE) {
         // for nodejs
-        random_device = function() { return require('crypto').randomBytes(1)[0]; };
+        random_device = function() { return require('crypto')['randomBytes'](1)[0]; };
       } else {
         // default for ES5 platforms
         random_device = function() { return (Math.random()*256)|0; };
@@ -1367,6 +1367,8 @@ mergeInto(LibraryManager.library, {
         };
         this.setErrno(errno);
         this.message = ERRNO_MESSAGES[errno];
+        // Node.js compatibility: assigning on this.stack fails on Node 4 (but fixed on Node 8)
+        if (this.stack) Object.defineProperty(this, "stack", { value: (new Error).stack });
 #if ASSERTIONS
         if (this.stack) this.stack = demangleAll(this.stack);
 #endif
